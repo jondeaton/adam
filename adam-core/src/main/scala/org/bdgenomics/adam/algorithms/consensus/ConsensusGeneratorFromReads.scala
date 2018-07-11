@@ -63,7 +63,6 @@ private[adam] class ConsensusGeneratorFromReads extends ConsensusGenerator {
           .setCigar(cigar.toString)
           .setMismatchingPositions(mdTag.toString())
           .build()
-
         newRead
       } else {
         r
@@ -80,8 +79,8 @@ private[adam] class ConsensusGeneratorFromReads extends ConsensusGenerator {
    * the read. We dedup the consensuses to remove any INDELs observed in
    * multiple reads and return.
    *
-   * @param Reads to search for INDELs.
-   * @return Consensuses generated from reads with a singel INDEL
+   * @param reads to search for INDELs.
+   * @return Consensuses generated from reads with a single INDEL
    */
   def findConsensus(reads: Iterable[RichAlignmentRecord]): Iterable[Consensus] = {
     reads.filter(r => r.mdTag.isDefined)
