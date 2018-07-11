@@ -284,12 +284,12 @@ private[converters] class FastaConverter(fragmentLength: Long) extends Serializa
           .setStart(index * fragmentLength)
           .setEnd(index * fragmentLength + bases.length)
           .setFragments(fragmentCount)
-          .setLength(bases.length)
-          .setContigLength(sequenceLength)
+          .setLength(bases.length.toLong)
+          .setContigLength(sequenceLength.toLong)
 
         // map over optional fields
-        name.foreach(builder.setContigName(_))
-        description.foreach(builder.setDescription(_))
+        name.foreach(builder.setContigName)
+        description.foreach(builder.setDescription)
 
         // build and return
         builder.build()
