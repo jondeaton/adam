@@ -71,8 +71,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // Makes a DataFrame mapping "recordGroupName" => "library"
     def libraryDf(rgd: RecordGroupDictionary): DataFrame  = {
-      rgd.recordGroupMap.mapValues(v => {
-        val (recordGroup, _) = v
+      rgd.recordGroupMap.mapValues(value => {
+        val (recordGroup, _) = value
         recordGroup.library
       }).toSeq.toDF("recordGroupName", "library")
     }
@@ -91,16 +91,17 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       (record.recordGroupName, record.readName, r.fivePrimeReferencePosition)
     }).toDF("recordGroupName", "readName", "fivePrimeReferencePosition")
 
+    val fragmentKey = Seq("recordGroupName", "readName")
+
     val df = rdd.dataset
-      .join(fivePrimeDf, Seq("recordGroupName", "readName"))
-      .join(scoreDf,    Seq("recordGroupName", "readName"))
+      .join(fivePrimeDf, fragmentKey)
+      .join(scoreDf,     fragmentKey)
       .join(libraryDf(rdd.recordGroups), "recordGroupName")
 
     // Get the score for each fragment by sum-aggregating the scores for each read
     val fragmentScoresDf = df.filter(df("primaryMapped"))
       .groupBy("recordGroupName", "readName", "library")
       .sum("score").as("score")
-
 
     // read one positions
     val readOnePosDf = df
@@ -110,20 +111,37 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // read two positions
     val readTwoPosDf = df
-        .filter(df("primaryMapped") and df("readInFragment") === 1)
-        .groupBy("recordGroupName", "readName", "library")
-        .agg(df("fivePrimeReferencePosition")).as("read2RefPos")
+      .filter(df("primaryMapped") and df("readInFragment") === 1)
+      .groupBy("recordGroupName", "readName", "library")
+      .agg(df("fivePrimeReferencePosition")).as("read2RefPos")
 
-    // add score and reference positions to the data frames
-    val singleBucketWindow = Window.partitionBy("recordGroupName", "readName")
+    // Score and reference positions per fragment
+    val fragDf = fragmentScoresDf
+      .join(readOnePosDf, fragmentKey)
+      .join(readTwoPosDf, fragmentKey)
 
-    // reference position is "contigName" and "fivePrimeReferencePosition"
-    val positionedDf = df.withColumn("fivePrimeReferencePosition")
+    // window into all fragments at the same reference position (sorted by score)
+    val positionWindow = Window.partitionBy("read1RefPos", "read2RefPos")
+      .orderBy($"score".desc)
+
+    val fragsRankedDf = fragDf.withColumn("rank", row_number.over(positionWindow))
+
+    val markedFragsDf = fragsRankedDf
+      .withColumn("duplicatedRead", fragsRankedDf("rank") =!= 1)
+      .drop("rank")
+
+    // Join the fragment markings back to
+    val markedReadsDf = df.join(markedFragsDf, fragmentKey)
+        .drop("fivePrimeReferencePosition", "read1RefPos", "read1RefPos")
+
+    // Convert back to RDD now that duplicates have been marked
+    markedReadsDf.as[AlignmentRecord].rdd
+
+    /* Not sure about this stuff down here...
 
     // window into all mapped reads of the same fragment
     val fragmentWindow = Window.partitionBy("recordGroupName", "readName", "library")
-        .orderBy($"score".desc)
-
+      .orderBy($"score".desc)
     // rank reads by score and denote all but highest scoring per fragment as duplicates
     val rankedDf = df.withColumn("rank", row_number.over(fragmentWindow))
     val markedDf = df.withColumn("duplicateRead", rankedDf("rank") =!= 1).drop("rank")
@@ -132,6 +150,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // Filter for
     val positionWindow = rdd.dataset.filter(('readMapped and 'primaryAlignment) or !'readMapped)
+
+    */
 
     // todo: This is the old code
     markBuckets(rdd.groupReadsByFragment(), rdd.recordGroups)
