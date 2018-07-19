@@ -29,6 +29,7 @@ import org.bdgenomics.adam.rdd.fragment.FragmentRDD
 import org.bdgenomics.adam.rich.RichAlignmentRecord
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment }
 import org.bdgenomics.adam.rdd.read._
+import org.bdgenomics.adam.sql
 
 private[rdd] object MarkDuplicates extends Serializable with Logging {
 
@@ -121,7 +122,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .join(readOnePosDf, fragmentKey)
       .join(readTwoPosDf, fragmentKey)
 
-      // window into all fragments at the same reference position (sorted by score)
+    // window into all fragments at the same reference position (sorted by score)
     val positionWindow = Window.partitionBy("read1RefPos", "read2RefPos")
       .orderBy($"score".desc)
 
@@ -136,12 +137,13 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .drop("fivePrimePosition", "read1RefPos", "read1RefPos")
 
     // Convert back to RDD now that duplicates have been marked
-    markedReadsDf.as[AlignmentRecord].rdd
+    markedReadsDf.as[sql.AlignmentRecord]
+      .rdd.map(_.toAvro)
 
     // todo: This is the old code
     //    markBuckets(rdd.groupReadsByFragment(), rdd.recordGroups)
     //      .flatMap(_.allReads)
-//        rdd.rdd
+    //    rdd.rdd
   }
 
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
