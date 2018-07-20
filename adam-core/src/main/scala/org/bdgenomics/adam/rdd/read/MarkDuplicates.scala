@@ -79,51 +79,46 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       }).toSeq.toDF("recordGroupName", "library")
     }
 
-    // Score all primaryMapped reads
-    val scoreDf = rdd.dataset
+    val score5PrimeDf = rdd.dataset
       .filter(record => record.primaryAlignment.getOrElse(false))
-      .map(record => {
-        (record.recordGroupName, record.readName, score(record.toAvro))
-      }).toDF("recordGroupName", "readName", "score")
+      .map((record: sql.AlignmentRecord) => {
+        val avroRecord = record.toAvro
+        val r = RichAlignmentRecord(avroRecord)
+        (record.recordGroupName, record.readName,
+          score(avroRecord), r.fivePrimeReferencePosition.pos)
+      }).toDF("recordGroupName", "readName", "score", "fivePrimePosition")
 
-    // Add "fivePrimeReferencePosition" from "unclippedEnd" and "unclippedStart"
-    // using "cigar", "start" and "end"
-    val fivePrimeDf = rdd.dataset.map(record => {
-      val r = RichAlignmentRecord(record.toAvro)
-      (record.recordGroupName, record.readName, r.fivePrimeReferencePosition.pos)
-    }).toDF("recordGroupName", "readName", "fivePrimePosition")
-
+    // Join in scores and 5' positions
     val fragmentKey = Seq("recordGroupName", "readName")
-
-    val df = rdd.dataset
-      .join(fivePrimeDf, fragmentKey)
-      .join(scoreDf, fragmentKey)
-      .join(libraryDf(rdd.recordGroups), "recordGroupName")
+    val df = rdd.dataset.join(score5PrimeDf, fragmentKey)
 
     // Get the score for each fragment by sum-aggregating the scores for each read
-    val fragmentScoresDf = df.filter(df("primaryAlignment"))
-      .groupBy("recordGroupName", "readName", "library")
+    val mappedFragsDf = df.filter($"primaryAlignment")
+
+    val fragmentScoresDf = mappedFragsDf
+      .groupBy("recordGroupName", "readName")
       .agg(sum($"score").as("score"))
 
     // read one positions
-    val readOnePosDf = df
-      .filter($"primaryAlignment" and $"readInFragment" === 0)
-      .groupBy($"recordGroupName", $"readName", $"library")
+    val readOnePosDf = mappedFragsDf
+      .filter($"readInFragment" === 0)
+      .groupBy($"recordGroupName", $"readName")
       .agg(max($"fivePrimePosition").as("read1RefPos"))
 
     // read two positions
-    val readTwoPosDf = df
-      .filter($"primaryAlignment" and $"readInFragment" === 1)
-      .groupBy($"recordGroupName", $"readName", $"library")
+    val readTwoPosDf = mappedFragsDf
+      .filter($"readInFragment" === 1)
+      .groupBy($"recordGroupName", $"readName")
       .agg(max($"fivePrimePosition").as("read2RefPos"))
 
     // Score and reference positions per fragment
     val fragDf = fragmentScoresDf
       .join(readOnePosDf, fragmentKey)
       .join(readTwoPosDf, fragmentKey)
+      .join(libraryDf(rdd.recordGroups), "recordGroupName")
 
     // window into all fragments at the same reference position (sorted by score)
-    val positionWindow = Window.partitionBy("read1RefPos", "read2RefPos")
+    val positionWindow = Window.partitionBy("read1RefPos", "read2RefPos", "library")
       .orderBy($"score".desc)
 
     val fragsRankedDf = fragDf.withColumn("rank", row_number.over(positionWindow))
