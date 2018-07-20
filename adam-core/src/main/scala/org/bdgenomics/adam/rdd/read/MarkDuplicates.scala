@@ -19,9 +19,9 @@ package org.bdgenomics.adam.rdd.read
 
 import org.bdgenomics.utils.misc.Logging
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{ Dataset, DataFrame, SQLContext }
+import org.apache.spark.sql.{ DataFrame, Dataset, SQLContext }
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{ row_number, max, sum }
+import org.apache.spark.sql.functions.{ max, row_number, sum }
 import org.bdgenomics.adam.instrumentation.Timers._
 import org.bdgenomics.adam.models.{ RecordGroupDictionary, ReferencePosition }
 import org.bdgenomics.adam.rdd.ADAMContext._
@@ -30,6 +30,8 @@ import org.bdgenomics.adam.rich.RichAlignmentRecord
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment }
 import org.bdgenomics.adam.rdd.read._
 import org.bdgenomics.adam.sql
+
+import scala.collection.immutable.StringLike
 
 private[rdd] object MarkDuplicates extends Serializable with Logging {
 
@@ -66,9 +68,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     })
   }
 
-  def apply(rdd: AlignmentRecordRDD): RDD[AlignmentRecord] = {
+  def apply(alignmentRecords: AlignmentRecordRDD): RDD[AlignmentRecord] = {
 
-    val sqlContext = SQLContext.getOrCreate(rdd.rdd.context)
+    val sqlContext = SQLContext.getOrCreate(alignmentRecords.rdd.context)
     import sqlContext.implicits._
 
     // Makes a DataFrame mapping "recordGroupName" => "library"
@@ -79,20 +81,20 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       }).toSeq.toDF("recordGroupName", "library")
     }
 
-    val score5PrimeDf = rdd.dataset
-      .filter(record => record.primaryAlignment.getOrElse(false))
-      .map((record: sql.AlignmentRecord) => {
-        val avroRecord = record.toAvro
-        val r = RichAlignmentRecord(avroRecord)
-        (record.recordGroupName, record.readName,
-          score(avroRecord), r.fivePrimeReferencePosition.pos)
+    // calculate scores and 5' positions
+    val score5PrimeDf = alignmentRecords.rdd
+      .filter(_.getPrimaryAlignment)
+      .map((record: AlignmentRecord) => {
+        (record.getRecordGroupName, record.getReadName,
+          score(record), record.fivePrimePosition)
       }).toDF("recordGroupName", "readName", "score", "fivePrimePosition")
 
     // Join in scores and 5' positions
     val fragmentKey = Seq("recordGroupName", "readName")
-    val df = rdd.dataset.join(score5PrimeDf, fragmentKey)
+    val df = alignmentRecords.dataset.join(score5PrimeDf, fragmentKey)
 
     // Get the score for each fragment by sum-aggregating the scores for each read
+    // todo: actually "readMapped" determines if it's a mapped read
     val mappedFragsDf = df.filter($"primaryAlignment")
 
     val fragmentScoresDf = mappedFragsDf
@@ -115,7 +117,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val fragDf = fragmentScoresDf
       .join(readOnePosDf, fragmentKey)
       .join(readTwoPosDf, fragmentKey)
-      .join(libraryDf(rdd.recordGroups), "recordGroupName")
+      .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
     // window into all fragments at the same reference position (sorted by score)
     val positionWindow = Window.partitionBy("read1RefPos", "read2RefPos", "library")
@@ -136,9 +138,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .rdd.map(_.toAvro)
 
     // todo: This is the old code
-    //    markBuckets(rdd.groupReadsByFragment(), rdd.recordGroups)
-    //      .flatMap(_.allReads)
-    //    rdd.rdd
+    // markBuckets(alignmentRecords.groupReadsByFragment(), alignmentRecords.recordGroups)
+    //  .flatMap(_.allReads)
+    // alignmentRecords.rdd
   }
 
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
