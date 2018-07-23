@@ -21,7 +21,7 @@ import org.bdgenomics.utils.misc.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{ DataFrame, Dataset, SQLContext }
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{ max, row_number, sum }
+import org.apache.spark.sql.functions
 import org.bdgenomics.adam.instrumentation.Timers._
 import org.bdgenomics.adam.models.{ RecordGroupDictionary, ReferencePosition }
 import org.bdgenomics.adam.rdd.ADAMContext._
@@ -32,6 +32,9 @@ import org.bdgenomics.adam.rdd.read._
 import org.bdgenomics.adam.sql
 
 import scala.collection.immutable.StringLike
+import scala.math
+import htsjdk.samtools.{ Cigar, CigarElement, CigarOperator, TextCigarCodec }
+import scala.collection.JavaConversions._
 
 private[rdd] object MarkDuplicates extends Serializable with Logging {
 
@@ -81,61 +84,72 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       }).toSeq.toDF("recordGroupName", "library")
     }
 
-    // calculate scores and 5' positions
-    val score5PrimeDf = alignmentRecords.rdd
-      .filter(_.getPrimaryAlignment)
-      .map((record: AlignmentRecord) => {
-        (record.getRecordGroupName, record.getReadName,
-          score(record), record.fivePrimePosition)
-      }).toDF("recordGroupName", "readName", "score", "fivePrimePosition")
+    // UDF for calculating score of a read
+    val scoreUDF = functions.udf((qual: String) => {
+      qual.toCharArray.map(q => q - 33).filter(15 <=).sum
+    })
 
-    // Join in scores and 5' positions
-    val fragmentKey = Seq("recordGroupName", "readName")
-    val df = alignmentRecords.dataset.join(score5PrimeDf, fragmentKey)
+    // UDF for calculating the 5' position of a read
+    def isClipped(el: CigarElement) = {
+      el.getOperator == CigarOperator.SOFT_CLIP ||
+        el.getOperator == CigarOperator.HARD_CLIP
+    }
 
-    // Get the score for each fragment by sum-aggregating the scores for each read
-    // todo: actually "readMapped" determines if it's a mapped read
-    val mappedFragsDf = df.filter($"primaryAlignment")
+    val fivePrimePositionUDF = functions.udf((readNegativeStrand: Boolean, cigar: String,
+      start: Long, end: Long) => {
+      val samtoolsCigar: Cigar = TextCigarCodec.decode(cigar)
+      if (readNegativeStrand) {
+        math.max(0L, samtoolsCigar.getCigarElements.reverse
+          .takeWhile(isClipped).foldLeft(end)({
+            (pos, cigarEl) => pos + cigarEl.getLength
+          }))
+      } else {
+        math.max(0L, samtoolsCigar.getCigarElements
+          .takeWhile(isClipped).foldLeft(start)({
+            (pos, cigarEl) => pos - cigarEl.getLength
+          }))
+      }
+    })
 
-    val fragmentScoresDf = mappedFragsDf
+    // 1. Find 5' positions for all reads
+    val df = alignmentRecords.dataset
+      .withColumn("fivePrimePosition",
+        fivePrimePositionUDF('readNegativeStrand, 'cigar, 'start, 'end))
+
+    import org.apache.spark.sql.functions.{ first, when, sum }
+
+    // 2. Group all fragments, finding read 1 & 2 reference positions
+    val positionedDf = df
+      .filter(('readMapped and 'primaryAlignment) or !'readMapped)
       .groupBy("recordGroupName", "readName")
-      .agg(sum($"score").as("score"))
+      .agg(
+        first(when('fivePrimePosition === 0, 'fivePrimePosition)).as("read1RefPos"),
+        first(when('fivePrimePosition === 1, 'fivePrimePosition)).as("read2RefPos"),
+        sum(scoreUDF('qual)).as("score"))
 
-    // read one positions
-    val readOnePosDf = mappedFragsDf
-      .filter($"readInFragment" === 0)
-      .groupBy($"recordGroupName", $"readName")
-      .agg(max($"fivePrimePosition").as("read1RefPos"))
+    val positionWindow = Window
+      .partitionBy('recordGroupName, 'readName, 'read1RefPos, 'read2RefPos, 'library)
+      .orderBy('score.desc)
 
-    // read two positions
-    val readTwoPosDf = mappedFragsDf
-      .filter($"readInFragment" === 1)
-      .groupBy($"recordGroupName", $"readName")
-      .agg(max($"fivePrimePosition").as("read2RefPos"))
-
-    // Score and reference positions per fragment
-    val fragDf = fragmentScoresDf
-      .join(readOnePosDf, fragmentKey)
-      .join(readTwoPosDf, fragmentKey)
+    val duplicatesDf = positionedDf
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
+      .withColumn("duplicatedRead", functions.row_number.over(positionWindow) =!= 1)
+      .select("recordGroupName", "readName")
+      .filter('duplicatedRead)
 
-    // window into all fragments at the same reference position (sorted by score)
-    val positionWindow = Window.partitionBy("read1RefPos", "read2RefPos", "library")
-      .orderBy($"score".desc)
+    // Convert to broadcasted set
+    val duplicateSet = alignmentRecords.rdd.context
+      .broadcast(duplicatesDf.collect()
+        .map(row => (row(0), row(1))).toSet)
 
-    val fragsRankedDf = fragDf.withColumn("rank", row_number.over(positionWindow))
+    // Mark the duplicates
+    alignmentRecords.rdd
+        .foreach(read => {
+          val fragID = (read.getRecordGroupName, read.getReadName)
+          read.setDuplicateRead(duplicateSet.value.contains(fragID))
+        })
 
-    val markedFragsDf = fragsRankedDf
-      .withColumn("duplicatedRead", fragsRankedDf("rank") =!= 1)
-      .drop("rank")
-
-    // Join the fragment markings back to
-    val markedReadsDf = df.join(markedFragsDf, fragmentKey)
-      .drop("fivePrimePosition", "read1RefPos", "read1RefPos")
-
-    // Convert back to RDD now that duplicates have been marked
-    markedReadsDf.as[sql.AlignmentRecord]
-      .rdd.map(_.toAvro)
+    alignmentRecords.rdd
 
     // todo: This is the old code
     // markBuckets(alignmentRecords.groupReadsByFragment(), alignmentRecords.recordGroups)
