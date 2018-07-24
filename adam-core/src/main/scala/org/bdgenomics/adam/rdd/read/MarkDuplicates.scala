@@ -123,12 +123,14 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .filter(('readMapped and 'primaryAlignment) or !'readMapped)
       .groupBy("recordGroupName", "readName")
       .agg(
-        first(when('fivePrimePosition === 0, 'fivePrimePosition)).as("read1RefPos"),
-        first(when('fivePrimePosition === 1, 'fivePrimePosition)).as("read2RefPos"),
+        first(when('readInFragment === 0, 'fivePrimePosition)).as("read1RefPos"),
+        first(when('readInFragment === 1, 'fivePrimePosition)).as("read2RefPos"),
         sum(scoreUDF('qual)).as("score"))
 
+    positionedDf.printSchema()
+
     val positionWindow = Window
-      .partitionBy('recordGroupName, 'readName, 'read1RefPos, 'read2RefPos, 'library)
+      .partitionBy('read1RefPos, 'read2RefPos)
       .orderBy('score.desc)
 
     val duplicatesDf = positionedDf
@@ -137,19 +139,17 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .select("recordGroupName", "readName")
       .filter('duplicatedRead)
 
-    // Convert to broadcasted set
+    // Convert to broadcast set
     val duplicateSet = alignmentRecords.rdd.context
       .broadcast(duplicatesDf.collect()
         .map(row => (row(0), row(1))).toSet)
 
-    // Mark the duplicates
     alignmentRecords.rdd
-        .foreach(read => {
-          val fragID = (read.getRecordGroupName, read.getReadName)
-          read.setDuplicateRead(duplicateSet.value.contains(fragID))
-        })
-
-    alignmentRecords.rdd
+      .map(read => {
+        val fragID = (read.getRecordGroupName, read.getReadName)
+        read.setDuplicateRead(duplicateSet.value.contains(fragID))
+        read
+      })
 
     // todo: This is the old code
     // markBuckets(alignmentRecords.groupReadsByFragment(), alignmentRecords.recordGroups)
