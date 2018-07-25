@@ -126,8 +126,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         first(when('readInFragment === 0, 'fivePrimePosition)).as("read1RefPos"),
         first(when('readInFragment === 1, 'fivePrimePosition)).as("read2RefPos"),
         sum(scoreUDF('qual)).as("score"))
-
-    positionedDf.printSchema()
+      .filter('read1RefPos.isNotNull)
 
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos)
@@ -144,6 +143,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .broadcast(duplicatesDf.collect()
         .map(row => (row(0), row(1))).toSet)
 
+    // Mark all the duplicates that have been found
     alignmentRecords.rdd
       .map(read => {
         val fragID = (read.getRecordGroupName, read.getReadName)
