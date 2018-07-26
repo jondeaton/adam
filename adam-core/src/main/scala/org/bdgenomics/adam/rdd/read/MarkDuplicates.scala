@@ -127,13 +127,33 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         first(when('readInFragment === 1, 'fivePrimePosition)).as("read2RefPos"),
         sum(scoreUDF('qual)).as("score"))
       .filter('read1RefPos.isNotNull)
+      .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
+
+    // Filtering by left position not being null here results in 1.5k duplicates not
+    // being marked that would have been marked otherwise
+
+    // Filtering by right position not being null here results in 2.5k duplicates not
+    // being marked that would have been marked otherwise
+
+//    val leftAndLibraryWindow = Window.partitionBy('read1Pos, 'library)
+//
+//    positionedDf
+//      .groupBy('read1RefPos, 'library)
+//      .agg(functions.countDistinct('read2RefPos).as("groupCount"))
+//
+//
+//    // The reason that you are getting so many more duplicates
+//    // is that when you group by left and right position, you get a while
+//    // bunch of reads that are completely unmapped
+//
+//    val leftAndLibraryGrouped = positionedDf
+//      .withColumn("groupCount", functions.countDistinct('read2RefPos))
 
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos)
       .orderBy('score.desc)
 
     val duplicatesDf = positionedDf
-      .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
       .withColumn("duplicatedRead", functions.row_number.over(positionWindow) =!= 1)
       .select("recordGroupName", "readName")
       .filter('duplicatedRead)
@@ -223,6 +243,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
             val readsByRightPos = readsAtLeftPos.groupBy(rightPosition)
 
+            // "Group Count" : The number of groups of
+            // reads-that-have-the-same-right-position
+            // within this group of reads at the same left position
             val groupCount = readsByRightPos.size
 
             readsByRightPos.foreach(e => {
@@ -230,6 +253,11 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
               val rightPos = e._1
               val reads = e._2
 
+              // todo: how is it possible for a read with null left position
+              // to be marked as a duplicate?
+
+              // "Group Is Fragments": This means that this is a group of reads
+              // all with the same left position, but which have no right position
               val groupIsFragments = rightPos.isEmpty
 
               // We have no pairs (only fragments) if the current group is a group of fragments
@@ -245,11 +273,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
                 markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
                 markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
               } else {
+                // This means that when you have a group of fragments and there ARE other pairs
+                // at that left position... they're all duplicates
                 markReads(reads, areDups = true)
               }
             })
         }
-
         readsAtLeftPos.map(_._2)
       })
   }
