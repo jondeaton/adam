@@ -127,7 +127,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         first(when('readInFragment === 0 and 'readMapped, 'fivePrimePosition)).as("read1RefPos"),
         first(when('readInFragment === 1 and 'readMapped, 'fivePrimePosition)).as("read2RefPos"),
         sum(scoreUDF('qual)).as("score"))
-      .filter('readMapped and 'read1RefPos.isNotNull)
+      .filter('read1RefPos.isNotNull)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
     // Filtering by left position not being null here results in 1.5k duplicates not
@@ -154,7 +154,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .orderBy('score.desc)
 
     val duplicatesDf = positionedDf
-      .withColumn("duplicatedRead", functions.row_number.over(positionWindow) =!= 1)
+      .withColumn("duplicatedRead",
+        functions.row_number.over(positionWindow) =!= 1 or 'read2RefPos.isNull)
       .select("recordGroupName", "readName")
       .filter('duplicatedRead)
 
