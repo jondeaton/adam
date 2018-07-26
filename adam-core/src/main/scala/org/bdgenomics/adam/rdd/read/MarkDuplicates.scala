@@ -127,7 +127,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         first(when('readInFragment === 0 and 'readMapped, 'fivePrimePosition)).as("read1RefPos"),
         first(when('readInFragment === 1 and 'readMapped, 'fivePrimePosition)).as("read2RefPos"),
         sum(scoreUDF('qual)).as("score"))
-      .filter('read1RefPos.isNotNull)
+      .filter('readMapped and 'read1RefPos.isNotNull)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
     // Filtering by left position not being null here results in 1.5k duplicates not
