@@ -119,12 +119,13 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     import org.apache.spark.sql.functions.{ first, when, sum }
 
     // 2. Group all fragments, finding read 1 & 2 reference positions
+    // todo: make sure that the mapped reads come first
     val positionedDf = df
       .filter(('readMapped and 'primaryAlignment) or !'readMapped)
       .groupBy("recordGroupName", "readName")
       .agg(
-        first(when('readInFragment === 0, 'fivePrimePosition)).as("read1RefPos"),
-        first(when('readInFragment === 1, 'fivePrimePosition)).as("read2RefPos"),
+        first(when('readInFragment === 0 and 'readMapped, 'fivePrimePosition)).as("read1RefPos"),
+        first(when('readInFragment === 1 and 'readMapped, 'fivePrimePosition)).as("read2RefPos"),
         sum(scoreUDF('qual)).as("score"))
       .filter('read1RefPos.isNotNull)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
@@ -134,23 +135,22 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // Filtering by right position not being null here results in 2.5k duplicates not
     // being marked that would have been marked otherwise
+/*
+    val leftAndLibraryWindow = Window.partitionBy('read1Pos, 'library)
 
-//    val leftAndLibraryWindow = Window.partitionBy('read1Pos, 'library)
-//
-//    positionedDf
-//      .groupBy('read1RefPos, 'library)
-//      .agg(functions.countDistinct('read2RefPos).as("groupCount"))
-//
-//
-//    // The reason that you are getting so many more duplicates
-//    // is that when you group by left and right position, you get a while
-//    // bunch of reads that are completely unmapped
-//
-//    val leftAndLibraryGrouped = positionedDf
-//      .withColumn("groupCount", functions.countDistinct('read2RefPos))
+    positionedDf
+      .groupBy('read1RefPos, 'library)
+      .agg(functions.countDistinct('read2RefPos).as("groupCount"))
 
+    // The reason that you are getting so many more duplicates
+    // is that when you group by left and right position, you get a while
+    // bunch of reads that are completely unmapped
+
+    val leftAndLibraryGrouped = positionedDf
+      .withColumn("groupCount", functions.countDistinct('read2RefPos))
+*/
     val positionWindow = Window
-      .partitionBy('read1RefPos, 'read2RefPos)
+      .partitionBy('read1RefPos, 'read2RefPos, 'library)
       .orderBy('score.desc)
 
     val duplicatesDf = positionedDf
