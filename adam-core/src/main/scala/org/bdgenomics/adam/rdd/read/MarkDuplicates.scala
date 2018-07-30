@@ -124,39 +124,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .agg(
         first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition)) as 'read1RefPos,
         first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition)) as 'read2RefPos,
-        // Read 1 Reference Position
-        //        when('primaryAlignment.contains(true),
-        //          first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition)))
-        //          .otherwise(first(when('readInFragment === 0, 'fivePrimePosition))) as 'read1RefPos,
-        //
-        //        // Read 2 Reference Position
-        //        when('primaryAlignment.contains(true),
-        //          first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition)))
-        //          .otherwise(first(when('readInFragment === 0, 'fivePrimePosition))) as 'read1RefPos,
         sum(when('primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
       .filter('read1RefPos.isNotNull)
-
-    // Filtering by left position not being null here results in 1.5k duplicates not
-    // being marked that would have been marked otherwise
-
-    // Filtering by right position not being null here results in 2.5k duplicates not
-    // being marked that would have been marked otherwise
-
-    /*
-    val leftAndLibraryWindow = Window.partitionBy('read1Pos, 'library)
-
-    positionedDf
-      .groupBy('read1RefPos, 'library)
-      .agg(functions.countDistinct('read2RefPos).as("groupCount"))
-
-    // The reason that you are getting so many more duplicates
-    // is that when you group by left and right position, you get a while
-    // bunch of reads that are completely unmapped
-
-    val leftAndLibraryGrouped = positionedDf
-      .withColumn("groupCount", functions.countDistinct('read2RefPos))
-      */
 
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos, 'library)
@@ -165,8 +135,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val duplicatesDf = positionedDf
       .withColumn("duplicatedRead",
         functions.row_number.over(positionWindow) =!= 1)
-      .select("recordGroupName", "readName")
       .filter('duplicatedRead)
+      .select("recordGroupName", "readName")
 
     // Convert to broadcast set
     val duplicateSet = alignmentRecords.rdd.context
@@ -177,11 +147,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     alignmentRecords.rdd
       .map(read => {
         val fragID = (read.getRecordGroupName, read.getReadName)
-        read.setDuplicateRead(
-          duplicateSet.value.contains(fragID)
-            ||
-            (read.getReadMapped && !read.getPrimaryAlignment)
-        )
+        read.setDuplicateRead(duplicateSet.value.contains(fragID)
+            || (read.getReadMapped && !read.getPrimaryAlignment))
         read
       })
 
@@ -296,6 +263,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         readsAtLeftPos.map(_._2)
       })
   }
+
+
 
   private object ScoreOrdering extends Ordering[(ReferencePositionPair, SingleReadBucket)] {
     override def compare(x: (ReferencePositionPair, SingleReadBucket), y: (ReferencePositionPair, SingleReadBucket)): Int = {
