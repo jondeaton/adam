@@ -111,8 +111,11 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       p._1.read2refPos
     }
 
-    rdd.keyBy(ReferencePositionPair(_))
-      .groupBy(leftPositionAndLibrary(_, recordGroups))
+    // rdd.count = 514303
+    val refPosKeyed = rdd.keyBy(ReferencePositionPair(_)) // count = 514,303
+    val leftPosLibGrouped = refPosKeyed.groupBy(leftPositionAndLibrary(_, recordGroups)) // 448,197
+
+    leftPosLibGrouped
       .flatMap(kv => PerformDuplicateMarking.time {
 
         val leftPos: Option[ReferencePosition] = kv._1._1
@@ -136,23 +139,23 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
               val rightPos = e._1
               val reads = e._2
 
-              val groupIsFragments = rightPos.isEmpty
+              //              val groupIsFragments = rightPos.isEmpty
 
               // We have no pairs (only fragments) if the current group is a group of fragments
               // and there is only one group in total
-              val onlyFragments = groupIsFragments && groupCount == 1
+              //              val onlyFragments = groupIsFragments && groupCount == 1
 
               // If there are only fragments then score the fragments. Otherwise, if there are not only
               // fragments (there are pairs as well) mark all fragments as duplicates.
               // If the group does not contain fragments (it contains pairs) then always score it.
-              if (onlyFragments || !groupIsFragments) {
-                // Find the highest-scoring read and mark it as not a duplicate. Mark all the other reads in this group as duplicates.
-                val highestScoringRead = reads.max(ScoreOrdering)
-                markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
-                markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
-              } else {
-                markReads(reads, areDups = true)
-              }
+              //              if (onlyFragments || !groupIsFragments) {
+              // Find the highest-scoring read and mark it as not a duplicate. Mark all the other reads in this group as duplicates.
+              val highestScoringRead = reads.max(ScoreOrdering)
+              markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
+              markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
+              //              } else {
+              //                markReads(reads, areDups = true)
+              //              }
             })
         }
 
