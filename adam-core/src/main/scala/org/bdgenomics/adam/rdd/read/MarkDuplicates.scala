@@ -113,18 +113,11 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // rdd.count = 514303
     val refPosKeyed = rdd.keyBy(ReferencePositionPair(_)) // count = 514,303
-    val leftPosLibGrouped = refPosKeyed.groupBy(leftPositionAndLibrary(_, recordGroups)) // 448,197
 
-//    val num_unmapped_left = leftPosLibGrouped.filter(kv => {
-//      val leftPos: Option[ReferencePosition] = kv._1._1
-//      if (leftPos.isEmpty) {
-//        false
-//      } else {
-//        true
-//      }
-//    }).count
-//
-//    log.warn(s"Number of unmapped left: ${num_unmapped_left}")
+    // debugging. The output of this needs to match the output from mine
+    val thingy = refPosKeyed.flatMap(_._1.read1refPos).map(_.pos).top(10)
+
+    val leftPosLibGrouped = refPosKeyed.groupBy(leftPositionAndLibrary(_, recordGroups)) // 448,197
 
     val answer = leftPosLibGrouped
       .flatMap(kv => PerformDuplicateMarking.time {
