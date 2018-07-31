@@ -114,8 +114,15 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // rdd.count = 514303
     val refPosKeyed = rdd.keyBy(ReferencePositionPair(_)) // count = 514,303
 
+    //    import org.bdgenomics.adam.rdd.read.ReferencePosition
+
+    val second_highest = refPosKeyed
+      .filter(_._1.read1refPos.getOrElse(ReferencePosition("default", 0)).pos == 25920756).take(1)
+
     // debugging. The output of this needs to match the output from mine
-    val thingy = refPosKeyed.flatMap(_._1.read1refPos).map(_.pos).top(10)
+    val thingy = refPosKeyed.flatMap(_._1.read1refPos).map(
+      rp => rp.pos
+    ).top(10)
 
     val leftPosLibGrouped = refPosKeyed.groupBy(leftPositionAndLibrary(_, recordGroups)) // 448,197
 
