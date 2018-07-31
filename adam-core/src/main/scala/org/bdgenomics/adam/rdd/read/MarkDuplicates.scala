@@ -95,7 +95,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         el.getOperator == CigarOperator.HARD_CLIP
     }
 
-    val fivePrimePositionUDF = functions.udf((readNegativeStrand: Boolean, cigar: String,
+    val fivePrimePositionUDF = functions.udf((readNegativeStrand: Boolean,
+      cigar: String,
       start: Long, end: Long) => {
       val samtoolsCigar: Cigar = TextCigarCodec.decode(cigar)
       if (readNegativeStrand) {
@@ -126,13 +127,21 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition)) as 'read2RefPos,
         sum(when('primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
-      .filter('read1RefPos.isNotNull)
+
+    // debugging
+    val topRead1RefPos = positionedDf.orderBy('read1RefPos).take(10)
+
+    // positionedDf.count = 514,303
+    val filteredDf = positionedDf.filter('read1RefPos.isNotNull) // count = 232,860
+
+    val okay = positionedDf.groupBy('read1RefPos, 'library).agg(functions.countDistinct('read2RefPos)).count
+    log.warn(s"okay: $okay")
 
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos, 'library)
       .orderBy('score.desc)
 
-    val duplicatesDf = positionedDf
+    val duplicatesDf = filteredDf
       .withColumn("duplicatedRead",
         functions.row_number.over(positionWindow) =!= 1)
       .filter('duplicatedRead)
@@ -148,7 +157,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .map(read => {
         val fragID = (read.getRecordGroupName, read.getReadName)
         read.setDuplicateRead(duplicateSet.value.contains(fragID)
-            || (read.getReadMapped && !read.getPrimaryAlignment))
+          || (read.getReadMapped && !read.getPrimaryAlignment))
         read
       })
 
@@ -239,32 +248,30 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
               // "Group Is Fragments": This means that this is a group of reads
               // all with the same left position, but which have no right position
-              val groupIsFragments = rightPos.isEmpty
+              //              val groupIsFragments = rightPos.isEmpty
 
               // We have no pairs (only fragments) if the current group is a group of fragments
               // and there is only one group in total
-              val onlyFragments = groupIsFragments && groupCount == 1
+              //              val onlyFragments = groupIsFragments && groupCount == 1
 
               // If there are only fragments then score the fragments. Otherwise, if there are not only
               // fragments (there are pairs as well) mark all fragments as duplicates.
               // If the group does not contain fragments (it contains pairs) then always score it.
-              if (onlyFragments || !groupIsFragments) {
-                // Find the highest-scoring read and mark it as not a duplicate. Mark all the other reads in this group as duplicates.
-                val highestScoringRead = reads.max(ScoreOrdering)
-                markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
-                markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
-              } else {
-                // This means that when you have a group of fragments and there ARE other pairs
-                // at that left position... they're all duplicates
-                markReads(reads, areDups = true)
-              }
+              //              if (onlyFragments || !groupIsFragments) {
+              // Find the highest-scoring read and mark it as not a duplicate. Mark all the other reads in this group as duplicates.
+              val highestScoringRead = reads.max(ScoreOrdering)
+              markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
+              markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
+              //              } else {
+              //                // This means that when you have a group of fragments and there ARE other pairs
+              //                // at that left position... they're all duplicates
+              //                markReads(reads, areDups = true)
+              //              }
             })
         }
         readsAtLeftPos.map(_._2)
       })
   }
-
-
 
   private object ScoreOrdering extends Ordering[(ReferencePositionPair, SingleReadBucket)] {
     override def compare(x: (ReferencePositionPair, SingleReadBucket), y: (ReferencePositionPair, SingleReadBucket)): Int = {
