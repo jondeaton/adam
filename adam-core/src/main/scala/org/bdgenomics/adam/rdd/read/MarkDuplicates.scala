@@ -89,33 +89,39 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       qual.toCharArray.map(q => q - 33).filter(15 <=).sum
     })
 
-    // UDF for calculating the 5' position of a read
-    def isClipped(el: CigarElement) = {
-      el.getOperator == CigarOperator.SOFT_CLIP ||
-        el.getOperator == CigarOperator.HARD_CLIP
+    import scala.math
+
+    def isClipped(el: CigarElement): Boolean = {
+      el.getOperator == CigarOperator.SOFT_CLIP || el.getOperator == CigarOperator.HARD_CLIP
     }
 
-    val fivePrimePositionUDF = functions.udf((readNegativeStrand: Boolean,
-      cigar: String,
-      start: Long, end: Long) => {
-      val samtoolsCigar: Cigar = TextCigarCodec.decode(cigar)
-      if (readNegativeStrand) {
-        math.max(0L, samtoolsCigar.getCigarElements.reverse
-          .takeWhile(isClipped).foldLeft(end)({
-            (pos, cigarEl) => pos + cigarEl.getLength
-          }))
-      } else {
-        math.max(0L, samtoolsCigar.getCigarElements
-          .takeWhile(isClipped).foldLeft(start)({
-            (pos, cigarEl) => pos - cigarEl.getLength
-          }))
+    def fivePrimePosition(readMapped: Boolean,
+                          readNegativeStrand: Boolean, cigar: String,
+                          start: Long, end: Long): Long = {
+      if (!readMapped) 0L
+      else {
+        val samtoolsCigar = TextCigarCodec.decode(cigar)
+        val cigarElements = samtoolsCigar.getCigarElements
+        math.max(0L,
+          if (readNegativeStrand) {
+            cigarElements.reverse.takeWhile(isClipped).foldLeft(end)({
+              (pos, cigarEl) => pos + cigarEl.getLength
+            })
+          } else {
+            cigarElements.takeWhile(isClipped).foldLeft(start)({
+              (pos, cigarEl) => pos - cigarEl.getLength
+            })
+          })
       }
-    })
+    }
+
+    val fpUDF = functions.udf((readMapped: Boolean, readNegativeStrand: Boolean, cigar: String,
+      start: Long, end: Long) => fivePrimePosition(readMapped, readNegativeStrand, cigar, start, end))
 
     // 1. Find 5' positions for all reads
     val df = alignmentRecords.dataset
       .withColumn("fivePrimePosition",
-        fivePrimePositionUDF('readNegativeStrand, 'cigar, 'start, 'end))
+        fpUDF('readMapped, 'readNegativeStrand, 'cigar, 'start, 'end))
 
     import org.apache.spark.sql.functions.{ first, when, sum }
 
@@ -134,8 +140,13 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // positionedDf.count = 514,303
     val filteredDf = positionedDf.filter('read1RefPos.isNotNull) // count = 232,860
 
+    // debugging
     val okay = positionedDf.groupBy('read1RefPos, 'library).agg(functions.countDistinct('read2RefPos)).count
     log.warn(s"okay: $okay")
+
+    val topk = positionedDf.select('read1RefPos)
+      .orderBy('read1RefPos.desc)
+      .take(10)
 
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos, 'library)
