@@ -129,21 +129,28 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val positionedDf = df
       .groupBy("recordGroupName", "readName")
       .agg(
-        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition), true) as 'read1RefPos,
-        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition), true) as 'read2RefPos,
+        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition),
+          ignoreNulls = true) as 'read1RefPos,
+        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition),
+          ignoreNulls = true) as 'read2RefPos,
+        //        functions.countDistinct('readMapped and 'secondaryAlignment) as 'secondaryCount,
         sum(when('primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
     // positionedDf.count = 514,303
-//    val filteredDf = positionedDf.filter('read1RefPos.isNotNull) // count = 232,860
 
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos, 'library)
       .orderBy('score.desc)
 
-    val duplicatesDf = positionedDf
-      .withColumn("duplicatedRead",
-        functions.row_number.over(positionWindow) =!= 1)
+    // Unmapped reads
+    val filteredDf = positionedDf.filter('read1RefPos.isNotNull) // count = 232,860 (not anymore)
+
+    // Need to keet track of the ones that
+    val unmappedDf = positionedDf.filter('read1RefPos.isNull)
+
+    val duplicatesDf = filteredDf
+      .withColumn("duplicatedRead", functions.row_number.over(positionWindow) =!= 1)
       .filter('duplicatedRead)
       .select("recordGroupName", "readName")
 
@@ -152,12 +159,21 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .broadcast(duplicatesDf.collect()
         .map(row => (row(0), row(1))).toSet)
 
+    val unmappedSet = alignmentRecords.rdd.context
+      .broadcast(unmappedDf.collect()
+        .map(row => (row(0), row(1))).toSet)
+
     // Mark all the duplicates that have been found
     alignmentRecords.rdd
       .map(read => {
         val fragID = (read.getRecordGroupName, read.getReadName)
-        read.setDuplicateRead(duplicateSet.value.contains(fragID)
-                  || (read.getReadMapped && !read.getPrimaryAlignment))
+
+        val isdup = duplicateSet.value.contains(fragID) ||
+          (
+            !unmappedSet.value.contains(fragID) &&
+            (read.getReadMapped && !read.primaryAlignment)
+          )
+        read.setDuplicateRead(isdup)
         read
       })
 
