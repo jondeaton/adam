@@ -85,6 +85,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     }
 
     // UDF for calculating score of a read
+
     val scoreUDF = functions.udf((qual: String) => {
       qual.toCharArray.map(q => q - 33).filter(15 <=).sum
     })
@@ -133,12 +134,15 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true) as 'read1RefPos,
         first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition),
           ignoreNulls = true) as 'read2RefPos,
+        // todo: this countDistinct is for debugging... remove it
         //        functions.countDistinct('readMapped and 'secondaryAlignment) as 'secondaryCount,
-        sum(when('primaryAlignment, scoreUDF('qual))) as 'score)
+        sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
-    // positionedDf.count = 514,303
+    val interestDf = positionedDf
+      .filter('readName === "HWI-D00684:221:HNWKCADXX:2:1213:7143:86120")
 
+    // positionedDf.count = 514,303
     val positionWindow = Window
       .partitionBy('read1RefPos, 'read2RefPos, 'library)
       .orderBy('score.desc)
