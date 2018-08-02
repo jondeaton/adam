@@ -132,30 +132,35 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .agg(
 
         // Read 1 Reference Position
-        first(when('primaryAlignment and 'readInFragment === 0, 'contigName), ignoreNulls = true)
+        first(when('primaryAlignment and 'readInFragment === 0,
+          when('readMapped, 'contigName).otherwise('sequence)),
+          ignoreNulls = true)
           as 'read1contigName,
 
-        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition), ignoreNulls = true)
+        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition),
+          ignoreNulls = true)
           as 'read1fivePrimePosition,
 
-        first(when('primaryAlignment and 'readInFragment === 0, 'readNegativeStrand), ignoreNulls = true)
+        first(when('primaryAlignment and 'readInFragment === 0, 'readNegativeStrand),
+          ignoreNulls = true)
           as 'read1readNegativeStrand,
 
         // Read 2 Reference Position
-        first(when('primaryAlignment and 'readInFragment === 1, 'contigName), ignoreNulls = true)
+        first(when('primaryAlignment and 'readInFragment === 1,
+          when('readMapped, 'contigName).otherwise('sequence)),
+          ignoreNulls = true)
           as 'read2contigName,
 
-        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition), ignoreNulls = true)
+        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition),
+          ignoreNulls = true)
           as 'read2fivePrimePosition,
 
-        first(when('primaryAlignment and 'readInFragment === 1, 'readNegativeStrand), ignoreNulls = true)
+        first(when('primaryAlignment and 'readInFragment === 1, 'readNegativeStrand),
+          ignoreNulls = true)
           as 'read2readNegativeStrand,
 
         sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
-
-    val interestDf = positionedDf
-      .filter('readName === "HWI-D00684:221:HNWKCADXX:2:1213:7143:86120")
 
     // positionedDf.count = 514,303
     val positionWindow = Window
