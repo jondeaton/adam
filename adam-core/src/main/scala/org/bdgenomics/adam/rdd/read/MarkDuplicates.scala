@@ -132,14 +132,24 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .agg(
 
         // Read 1 Reference Position
-        first(when('primaryAlignment and 'readInFragment === 0,
-          functions.struct('contigName, 'fivePrimePosition, 'readNegativeStrand)), ignoreNulls = true)
-          as 'read1RefPos,
+        first(when('primaryAlignment and 'readInFragment === 0, 'contigName), ignoreNulls = true)
+          as 'read1contigName,
+
+        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition), ignoreNulls = true)
+          as 'read1fivePrimePosition,
+
+        first(when('primaryAlignment and 'readInFragment === 0, 'readNegativeStrand), ignoreNulls = true)
+          as 'read1readNegativeStrand,
 
         // Read 2 Reference Position
-        first(when('primaryAlignment and 'readInFragment === 1,
-          functions.struct('contigName, 'fivePrimePosition, 'readNegativeStrand)), ignoreNulls = true)
-          as 'read2RefPos,
+        first(when('primaryAlignment and 'readInFragment === 1, 'contigName), ignoreNulls = true)
+          as 'read2contigName,
+
+        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition), ignoreNulls = true)
+          as 'read2fivePrimePosition,
+
+        first(when('primaryAlignment and 'readInFragment === 1, 'readNegativeStrand), ignoreNulls = true)
+          as 'read2readNegativeStrand,
 
         sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
@@ -149,14 +159,16 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // positionedDf.count = 514,303
     val positionWindow = Window
-      .partitionBy('read1RefPos, 'read2RefPos, 'library)
+      .partitionBy('library,
+        'read1contigName, 'read1fivePrimePosition, 'read1readNegativeStrand,
+        'read2contigName, 'read2fivePrimePosition, 'read2readNegativeStrand)
       .orderBy('score.desc)
 
     // Unmapped reads
-    val filteredDf = positionedDf.filter('read1RefPos.isNotNull) // count = 232,860 (not anymore)
+    val filteredDf = positionedDf.filter('read1fivePrimePosition.isNotNull) // count = 232,860 (not anymore)
 
     // Need to keet track of the ones that
-    val unmappedDf = positionedDf.filter('read1RefPos.isNull)
+    val unmappedDf = positionedDf.filter('read1fivePrimePosition.isNull)
 
     val duplicatesDf = filteredDf
       .withColumn("duplicatedRead", functions.row_number.over(positionWindow) =!= 1)
