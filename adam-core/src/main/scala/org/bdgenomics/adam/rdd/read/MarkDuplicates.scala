@@ -130,12 +130,17 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val positionedDf = df
       .groupBy("recordGroupName", "readName")
       .agg(
-        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition),
-          ignoreNulls = true) as 'read1RefPos,
-        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition),
-          ignoreNulls = true) as 'read2RefPos,
-        // todo: this countDistinct is for debugging... remove it
-        //        functions.countDistinct('readMapped and 'secondaryAlignment) as 'secondaryCount,
+
+        // Read 1 Reference Position
+        first(when('primaryAlignment and 'readInFragment === 0,
+          functions.struct('contigName, 'fivePrimePosition, 'readNegativeStrand)), ignoreNulls = true)
+          as 'read1RefPos,
+
+        // Read 2 Reference Position
+        first(when('primaryAlignment and 'readInFragment === 1,
+          functions.struct('contigName, 'fivePrimePosition, 'readNegativeStrand)), ignoreNulls = true)
+          as 'read2RefPos,
+
         sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
