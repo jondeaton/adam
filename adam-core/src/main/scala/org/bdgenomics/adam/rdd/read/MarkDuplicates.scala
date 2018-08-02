@@ -30,6 +30,7 @@ import org.bdgenomics.adam.rich.RichAlignmentRecord
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment }
 import org.bdgenomics.adam.rdd.read._
 import org.bdgenomics.adam.sql
+import org.bdgenomics.formats.avro.{ AlignmentRecord, Strand }
 
 import scala.collection.immutable.StringLike
 import scala.math
@@ -142,9 +143,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true)
           as 'read1fivePrimePosition,
 
-        first(when('primaryAlignment and 'readInFragment === 0, 'readNegativeStrand),
+        first(when('primaryAlignment and 'readInFragment === 0,
+          when('readMapped,
+            when('readNegativeStrand, Strand.REVERSE.toString).otherwise(Strand.FORWARD.toString))
+            .otherwise(Strand.INDEPENDENT.toString)),
           ignoreNulls = true)
-          as 'read1readNegativeStrand,
+          as 'read1strand,
 
         // Read 2 Reference Position
         first(when('primaryAlignment and 'readInFragment === 1,
@@ -157,9 +161,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true)
           as 'read2fivePrimePosition,
 
-        first(when('primaryAlignment and 'readInFragment === 1, 'readNegativeStrand),
+        first(when('primaryAlignment and 'readInFragment === 1,
+          when('readMapped,
+            when('readNegativeStrand, Strand.REVERSE.toString).otherwise(Strand.FORWARD.toString))
+            .otherwise(Strand.INDEPENDENT.toString)),
           ignoreNulls = true)
-          as 'read2readNegativeStrand,
+          as 'read2strand,
 
         sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
@@ -167,8 +174,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // positionedDf.count = 514,303
     val positionWindow = Window
       .partitionBy('library,
-        'read1contigName, 'read1fivePrimePosition, 'read1readNegativeStrand,
-        'read2contigName, 'read2fivePrimePosition, 'read2readNegativeStrand)
+        'read1contigName, 'read1fivePrimePosition, 'read1strand,
+        'read2contigName, 'read2fivePrimePosition, 'read2strand)
       .orderBy('score.desc)
 
     // Unmapped reads
