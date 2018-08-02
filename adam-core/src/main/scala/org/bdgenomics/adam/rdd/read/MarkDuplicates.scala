@@ -137,7 +137,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true)
           as 'read1contigName,
 
-        first(when('primaryAlignment and 'readInFragment === 0, 'fivePrimePosition),
+        first(when('primaryAlignment and 'readInFragment === 0,
+          when('readMapped, 'fivePrimePosition).otherwise(0L)),
           ignoreNulls = true)
           as 'read1fivePrimePosition,
 
@@ -151,7 +152,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true)
           as 'read2contigName,
 
-        first(when('primaryAlignment and 'readInFragment === 1, 'fivePrimePosition),
+        first(when('primaryAlignment and 'readInFragment === 1,
+          when('readMapped, 'fivePrimePosition).otherwise(0L)),
           ignoreNulls = true)
           as 'read2fivePrimePosition,
 
