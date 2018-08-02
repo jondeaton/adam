@@ -148,8 +148,13 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
             readsByRightPos.foreach(e => {
 
               val rightPos = e._1
+              if (leftPos.fold(false)(_.pos == 2629252) && rightPos.fold(false)(_.pos == 0)) {
+                log.warn("found it")
+              }
               val reads = e._2
-
+              if (reads.exists(_._2.primaryMapped.exists(_.getReadName == "HWI-D00684:221:HNWKCADXX:2:1213:7143:86120"))) {
+                log.warn("Found the original one")
+              }
               //              val groupIsFragments = rightPos.isEmpty
 
               // We have no pairs (only fragments) if the current group is a group of fragments
