@@ -29,7 +29,7 @@ import org.bdgenomics.adam.rdd.fragment.FragmentRDD
 import org.bdgenomics.adam.rich.RichAlignmentRecord
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment }
 import org.bdgenomics.adam.rdd.read._
-import org.bdgenomics.adam.sql
+import org.bdgenomics.adam.sql.{ AlignmentRecord => AlignmentRecordSchema }
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Strand }
 
 import scala.collection.immutable.StringLike
@@ -168,6 +168,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true)
           as 'read2strand,
 
+        // Fragment score
         sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
@@ -184,8 +185,28 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // Need to keet track of the ones that
     val unmappedDf = positionedDf.filter('read1fivePrimePosition.isNull)
 
-    val duplicatesDf = filteredDf
-      .withColumn("duplicatedRead", functions.row_number.over(positionWindow) =!= 1)
+    // Figuring out which
+    val groupCountDf = filteredDf
+      .groupBy('library, 'read1contigName, 'read1fivePrimePosition, 'read1strand)
+      .agg(functions.countDistinct('read2contigName, 'read2fivePrimePosition, 'read2strand)
+        as 'groupCount)
+
+    // Join in the group counts
+    val joinedDf = filteredDf.join(groupCountDf,
+      (filteredDf("library") === groupCountDf("library").alias("lib") or
+        (filteredDf("library").isNull and groupCountDf("library").isNull)) and
+        filteredDf("read1contigName") === groupCountDf("read1contigName").alias("contig") and
+        filteredDf("read1fivePrimePosition") === groupCountDf("read1fivePrimePosition").alias("5'") and
+        filteredDf("read1strand") === groupCountDf("read1strand").alias("strand"),
+      "left")
+      .drop(groupCountDf("library")).drop(groupCountDf("read1contigName"))
+      .drop(groupCountDf("read1fivePrimePosition")).drop(groupCountDf("read1strand"))
+
+    val duplicatesDf = joinedDf
+      .withColumn("duplicatedRead",
+        functions.row_number.over(positionWindow) =!= 1 or
+          ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull
+            and 'groupCount > 0))
       .filter('duplicatedRead)
       .select("recordGroupName", "readName")
 
@@ -197,6 +218,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val unmappedSet = alignmentRecords.rdd.context
       .broadcast(unmappedDf.collect()
         .map(row => (row(0), row(1))).toSet)
+
+//    val uhh = duplicatesDf.as[AlignmentRecordSchema]
+//      .rdd
 
     // Mark all the duplicates that have been found
     alignmentRecords.rdd
@@ -299,25 +323,25 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
               // "Group Is Fragments": This means that this is a group of reads
               // all with the same left position, but which have no right position
-              //              val groupIsFragments = rightPos.isEmpty
+              val groupIsFragments = rightPos.isEmpty
 
               // We have no pairs (only fragments) if the current group is a group of fragments
               // and there is only one group in total
-              //              val onlyFragments = groupIsFragments && groupCount == 1
+              val onlyFragments = groupIsFragments && groupCount == 1
 
               // If there are only fragments then score the fragments. Otherwise, if there are not only
               // fragments (there are pairs as well) mark all fragments as duplicates.
               // If the group does not contain fragments (it contains pairs) then always score it.
-              //              if (onlyFragments || !groupIsFragments) {
-              // Find the highest-scoring read and mark it as not a duplicate. Mark all the other reads in this group as duplicates.
-              val highestScoringRead = reads.max(ScoreOrdering)
-              markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
-              markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
-              //              } else {
-              //                // This means that when you have a group of fragments and there ARE other pairs
-              //                // at that left position... they're all duplicates
-              //                markReads(reads, areDups = true)
-              //              }
+              if (onlyFragments || !groupIsFragments) {
+                // Find the highest-scoring read and mark it as not a duplicate. Mark all the other reads in this group as duplicates.
+                val highestScoringRead = reads.max(ScoreOrdering)
+                markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
+                markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
+              } else {
+                // This means that when you have a group of fragments and there ARE other pairs
+                // at that left position... they're all duplicates
+                markReads(reads, areDups = true)
+              }
             })
         }
         readsAtLeftPos.map(_._2)
