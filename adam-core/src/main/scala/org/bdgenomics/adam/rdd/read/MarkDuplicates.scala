@@ -19,14 +19,22 @@ package org.bdgenomics.adam.rdd.read
 
 import org.bdgenomics.utils.misc.Logging
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.{ DataFrame, Dataset, SQLContext }
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.functions
 import org.bdgenomics.adam.instrumentation.Timers._
-import org.bdgenomics.adam.models.{
-  RecordGroupDictionary,
-  ReferencePosition
-}
+import org.bdgenomics.adam.models.{ RecordGroupDictionary, ReferencePosition }
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.rdd.fragment.FragmentRDD
+import org.bdgenomics.adam.rich.RichAlignmentRecord
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment }
+import org.bdgenomics.adam.rdd.read._
+import org.bdgenomics.adam.sql
+
+import scala.collection.immutable.StringLike
+import scala.math
+import htsjdk.samtools.{ Cigar, CigarElement, CigarOperator, TextCigarCodec }
+import scala.collection.JavaConversions._
 
 private[rdd] object MarkDuplicates extends Serializable with Logging {
 
@@ -63,14 +71,114 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     })
   }
 
-  def apply(rdd: AlignmentRecordRDD): RDD[AlignmentRecord] = {
+  def apply(alignmentRecords: AlignmentRecordRDD): RDD[AlignmentRecord] = {
 
-    markBuckets(rdd.groupReadsByFragment(), rdd.recordGroups)
-      .flatMap(_.allReads)
+    val sqlContext = SQLContext.getOrCreate(alignmentRecords.rdd.context)
+    import sqlContext.implicits._
+
+    // Makes a DataFrame mapping "recordGroupName" => "library"
+    def libraryDf(rgd: RecordGroupDictionary): DataFrame = {
+      rgd.recordGroupMap.mapValues(value => {
+        val (recordGroup, _) = value
+        recordGroup.library
+      }).toSeq.toDF("recordGroupName", "library")
+    }
+
+    // UDF for calculating score of a read
+    val scoreUDF = functions.udf((qual: String) => {
+      qual.toCharArray.map(q => q - 33).filter(15 <=).sum
+    })
+
+    // UDF for calculating the 5' position of a read
+    def isClipped(el: CigarElement) = {
+      el.getOperator == CigarOperator.SOFT_CLIP ||
+        el.getOperator == CigarOperator.HARD_CLIP
+    }
+
+    val fivePrimePositionUDF = functions.udf((readNegativeStrand: Boolean, cigar: String,
+      start: Long, end: Long) => {
+      val samtoolsCigar: Cigar = TextCigarCodec.decode(cigar)
+      if (readNegativeStrand) {
+        math.max(0L, samtoolsCigar.getCigarElements.reverse
+          .takeWhile(isClipped).foldLeft(end)({
+            (pos, cigarEl) => pos + cigarEl.getLength
+          }))
+      } else {
+        math.max(0L, samtoolsCigar.getCigarElements
+          .takeWhile(isClipped).foldLeft(start)({
+            (pos, cigarEl) => pos - cigarEl.getLength
+          }))
+      }
+    })
+
+    // 1. Find 5' positions for all reads
+    val df = alignmentRecords.dataset
+      .withColumn("fivePrimePosition",
+        fivePrimePositionUDF('readNegativeStrand, 'cigar, 'start, 'end))
+
+    import org.apache.spark.sql.functions.{ first, when, sum }
+
+    // 2. Group all fragments, finding read 1 & 2 reference positions
+    // todo: make sure that the mapped reads come first
+    val positionedDf = df
+      .filter(('readMapped and 'primaryAlignment) or !'readMapped)
+      .groupBy("recordGroupName", "readName")
+      .agg(
+        first(when('readInFragment === 0 and 'readMapped, 'fivePrimePosition)).as("read1RefPos"),
+        first(when('readInFragment === 1 and 'readMapped, 'fivePrimePosition)).as("read2RefPos"),
+        sum(scoreUDF('qual)).as("score"))
+      .filter('read1RefPos.isNotNull)
+      .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
+
+    // Filtering by left position not being null here results in 1.5k duplicates not
+    // being marked that would have been marked otherwise
+
+    // Filtering by right position not being null here results in 2.5k duplicates not
+    // being marked that would have been marked otherwise
+/*
+    val leftAndLibraryWindow = Window.partitionBy('read1Pos, 'library)
+
+    positionedDf
+      .groupBy('read1RefPos, 'library)
+      .agg(functions.countDistinct('read2RefPos).as("groupCount"))
+
+    // The reason that you are getting so many more duplicates
+    // is that when you group by left and right position, you get a while
+    // bunch of reads that are completely unmapped
+
+    val leftAndLibraryGrouped = positionedDf
+      .withColumn("groupCount", functions.countDistinct('read2RefPos))
+*/
+    val positionWindow = Window
+      .partitionBy('read1RefPos, 'read2RefPos, 'library)
+      .orderBy('score.desc)
+
+    val duplicatesDf = positionedDf
+      .withColumn("duplicatedRead",
+        functions.row_number.over(positionWindow) =!= 1 or 'read2RefPos.isNull)
+      .select("recordGroupName", "readName")
+      .filter('duplicatedRead)
+
+    // Convert to broadcast set
+    val duplicateSet = alignmentRecords.rdd.context
+      .broadcast(duplicatesDf.collect()
+        .map(row => (row(0), row(1))).toSet)
+
+    // Mark all the duplicates that have been found
+    alignmentRecords.rdd
+      .map(read => {
+        val fragID = (read.getRecordGroupName, read.getReadName)
+        read.setDuplicateRead(duplicateSet.value.contains(fragID))
+        read
+      })
+
+    // todo: This is the old code
+    // markBuckets(alignmentRecords.groupReadsByFragment(), alignmentRecords.recordGroups)
+    //  .flatMap(_.allReads)
+    // alignmentRecords.rdd
   }
 
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
-
     markBuckets(rdd.rdd.map(f => SingleReadBucket(f)), rdd.recordGroups)
       .map(_.toFragment)
   }
@@ -96,14 +204,21 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
                           recordGroups: RecordGroupDictionary): RDD[SingleReadBucket] = {
     checkRecordGroups(recordGroups)
 
+    // Gets the library of a SingleReadBucket
+    def getLibrary(singleReadBucket: SingleReadBucket,
+                   recordGroups: RecordGroupDictionary): Option[String] = {
+      val recordGroupName = singleReadBucket.allReads.head.getRecordGroupName
+      recordGroups.recordGroupMap.get(recordGroupName).flatMap(v => {
+        val (recordGroup, _) = v
+        recordGroup.library
+      })
+    }
+
     // Group by library and left position
     def leftPositionAndLibrary(p: (ReferencePositionPair, SingleReadBucket),
-                               rgd: RecordGroupDictionary): (Option[ReferencePosition], String) = {
-      if (p._2.allReads.head.getRecordGroupName != null) {
-        (p._1.read1refPos, rgd(p._2.allReads.head.getRecordGroupName).library.getOrElse(null))
-      } else {
-        (p._1.read1refPos, null)
-      }
+                               rgd: RecordGroupDictionary): (Option[ReferencePosition], Option[String]) = {
+      val (refPosPair, singleReadBucket) = p
+      (refPosPair.read1refPos, getLibrary(singleReadBucket, rgd))
     }
 
     // Group by right position
@@ -129,6 +244,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
             val readsByRightPos = readsAtLeftPos.groupBy(rightPosition)
 
+            // "Group Count" : The number of groups of
+            // reads-that-have-the-same-right-position
+            // within this group of reads at the same left position
             val groupCount = readsByRightPos.size
 
             readsByRightPos.foreach(e => {
@@ -136,6 +254,11 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
               val rightPos = e._1
               val reads = e._2
 
+              // todo: how is it possible for a read with null left position
+              // to be marked as a duplicate?
+
+              // "Group Is Fragments": This means that this is a group of reads
+              // all with the same left position, but which have no right position
               val groupIsFragments = rightPos.isEmpty
 
               // We have no pairs (only fragments) if the current group is a group of fragments
@@ -151,11 +274,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
                 markReadsInBucket(highestScoringRead._2, primaryAreDups = false, secondaryAreDups = true)
                 markReads(reads, primaryAreDups = true, secondaryAreDups = true, ignore = Some(highestScoringRead))
               } else {
+                // This means that when you have a group of fragments and there ARE other pairs
+                // at that left position... they're all duplicates
                 markReads(reads, areDups = true)
               }
             })
         }
-
         readsAtLeftPos.map(_._2)
       })
   }

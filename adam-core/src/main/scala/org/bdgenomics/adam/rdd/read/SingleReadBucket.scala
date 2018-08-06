@@ -98,7 +98,6 @@ private[read] object SingleReadBucket extends Logging {
     rdd.groupBy(p => (p.getRecordGroupName, p.getReadName))
       .map(kv => {
         val (_, reads) = kv
-
         fromGroupedReads(reads)
       })
   }
