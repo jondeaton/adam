@@ -92,8 +92,6 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       qual.toCharArray.map(q => q - 33).filter(15 <=).sum
     })
 
-    import scala.math
-
     def isClipped(el: CigarElement): Boolean = {
       el.getOperator == CigarOperator.SOFT_CLIP || el.getOperator == CigarOperator.HARD_CLIP
     }
@@ -121,12 +119,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val fpUDF = functions.udf((readMapped: Boolean, readNegativeStrand: Boolean, cigar: String,
       start: Long, end: Long) => fivePrimePosition(readMapped, readNegativeStrand, cigar, start, end))
 
-    // 1. Find 5' positions for all reads
+    // Find 5' positions for all reads
     val df = alignmentRecords.dataset
       .withColumn("fivePrimePosition",
         fpUDF('readMapped, 'readNegativeStrand, 'cigar, 'start, 'end))
 
-    // 2. Group all fragments, finding read 1 & 2 reference positions
+    // Group all fragments, finding read 1 & 2 reference positions and scores
     val positionedDf = df
       .groupBy("recordGroupName", "readName")
       .agg(
@@ -171,7 +169,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         sum(when('readMapped and 'primaryAlignment, scoreUDF('qual))) as 'score)
       .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
 
-    // positionedDf.count = 514,303
+    // Window into fragments grouped by left and right reference positions
     val positionWindow = Window
       .partitionBy('library,
         'read1contigName, 'read1fivePrimePosition, 'read1strand,
@@ -182,20 +180,13 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val filteredDf = positionedDf
       .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
 
-    val unmappedDf = positionedDf
-      .withColumn("unmapped",
-        when(
-          'read1contigName.isNull and 'read1fivePrimePosition.isNull and 'read1strand.isNull, true)
-          .otherwise(false))
-      .select("recordGroupName", "readName", "unmapped")
-
     // Count the number of groups of right-position-mapped fragments for each left position
     val groupCountDf = filteredDf
       .groupBy('library, 'read1contigName, 'read1fivePrimePosition, 'read1strand)
       .agg(countDistinct('read2contigName, 'read2fivePrimePosition, 'read2strand)
         as 'groupCount)
 
-    // Join in the group counts
+    // Join in the group counts for each fragment
     val joinedDf = filteredDf.join(groupCountDf,
       (filteredDf("library") === groupCountDf("library").alias("lib") or
         (filteredDf("library").isNull and groupCountDf("library").isNull)) and
@@ -206,42 +197,29 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .drop(groupCountDf("library")).drop(groupCountDf("read1contigName"))
       .drop(groupCountDf("read1fivePrimePosition")).drop(groupCountDf("read1strand"))
 
+    // Join in the duplicate fragment information
     val duplicatesDf = joinedDf
-      .withColumn("duplicateRead",
+      .withColumn("duplicateFragment",
         functions.row_number.over(positionWindow) =!= 1 or
           ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull
             and 'groupCount > 0))
-      .select("recordGroupName", "readName", "duplicateRead")
+      .select("recordGroupName", "readName", "duplicateFragment")
 
     val finalDf = alignmentRecords.dataset
-    //    val schema = AlignmentRecord.getClassSchema
-
-    val withDupsDf = finalDf
+    finalDf
       .drop("duplicateRead")
-
       .join(duplicatesDf,
         finalDf("recordGroupName") === duplicatesDf("recordGroupName").alias("rgn1") and
           finalDf("readName") === duplicatesDf("readName").alias("rn"))
-      .drop(duplicatesDf("recordGroupName")).drop(duplicatesDf("readName"))
-
-    withDupsDf
-      .join(unmappedDf,
-        withDupsDf("recordGroupName") === unmappedDf("recordGroupName").alias("rgn2") and
-          withDupsDf("readName") === unmappedDf("readName").alias("rn"))
-      .drop(unmappedDf("recordGroupName")).drop(unmappedDf("readName"))
-
+      .drop(duplicatesDf("recordGroupName"))
+      .drop(duplicatesDf("readName"))
       .withColumn("duplicateRead",
-        when('duplicateRead, true)
+        when('duplicateFragment and 'readMapped, true)
           .otherwise(
-            when(!'unmapped and 'readMapped and !'primaryAlignment, true)
-              .otherwise(false)))
+            when('readMapped and !'primaryAlignment, true).otherwise(false)))
+      .drop("duplicateFragment")
       .as[AlignmentRecordSchema]
-      .rdd.map(read => read.toAvro)
-
-    // todo: This is the old code
-    // markBuckets(alignmentRecords.groupReadsByFragment(), alignmentRecords.recordGroups)
-    //  .flatMap(_.allReads)
-    // alignmentRecords.rdd
+      .rdd.map(_.toAvro)
   }
 
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
