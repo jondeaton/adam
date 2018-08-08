@@ -67,20 +67,18 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
     import rdd.dataset.sparkSession.implicits._
 
-    rdd.rdd.flatMap(f => {
-
-      val library =
-
-      SingleReadBucket(f).primaryMapped.map(alignmentRecord => {
-
+    def toFragmentSchema(alignmentRecord: AlignmentRecord) = {
         (rdd.recordGroups(alignmentRecord.getRecordGroupName),
           alignmentRecord.getRecordGroupName, alignmentRecord.getReadName,
-        alignmentRecord.getContigName, alignmentRecord)
-      })
+          alignmentRecord.getContigName, alignmentRecord)
+    }
 
-      Seq(10)
-
-    })
+    rdd.rdd.flatMap(f => {
+      val bucket = SingleReadBucket(f)
+      bucket.primaryMapped.map(toFragmentSchema) ++
+        bucket.secondaryMapped.map(toFragmentSchema) ++
+        bucket.unmapped.map(toFragmentSchema
+    }).toDF()
 
     markBuckets(rdd.rdd.map(f => SingleReadBucket(f)), rdd.recordGroups)
       .map(_.toFragment)
@@ -292,6 +290,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     *         group dictionary
     */
   private def libraryDf(recordGroupDictionary: RecordGroupDictionary): DataFrame = {
+    // todo: import implicits?
     recordGroupDictionary.recordGroupMap.mapValues(value => {
       val (recordGroup, _) = value
       recordGroup.library
