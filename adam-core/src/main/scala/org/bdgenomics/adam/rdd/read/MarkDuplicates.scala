@@ -67,21 +67,50 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
     import rdd.dataset.sparkSession.implicits._
 
-    def toFragmentSchema(alignmentRecord: AlignmentRecord) = {
-        (rdd.recordGroups(alignmentRecord.getRecordGroupName),
-          alignmentRecord.getRecordGroupName, alignmentRecord.getReadName,
-          alignmentRecord.getContigName, alignmentRecord)
+    def toFragmentSchema(fragment: Fragment, recordGroups: RecordGroupDictionary) = {
+      val bucket = SingleReadBucket(fragment)
+      val position = ReferencePositionPair(bucket)
+
+      val recordGroupName = bucket.allReads.headOption.fold()(_.getRecordGroupName)
+      val library = recordGroups(recordGroupName)
+
+      // Reference positions of each read in the fragment
+      val read1refPos = position.read1refPos
+      val read2refPos = position.read2refPos
+
+      // Tuple that will be turned into a row in the dataframe
+      (library , recordGroupName, fragment.getReadName,
+        read1refPos.fold()(_.referenceName), read1refPos.fold()(_.pos), read1refPos.fold()(_.strand),
+        read2refPos.fold()(_.referenceName), read2refPos.fold()(_.pos), read2refPos.fold()(_.strand),
+        scoreBucket(bucket))
     }
 
-    rdd.rdd.flatMap(f => {
-      val bucket = SingleReadBucket(f)
-      bucket.primaryMapped.map(toFragmentSchema) ++
-        bucket.secondaryMapped.map(toFragmentSchema) ++
-        bucket.unmapped.map(toFragmentSchema
-    }).toDF()
+    val df = rdd.rdd.map(toFragmentSchema(_, rdd.recordGroups))
+      .toDF("library", "recordGroupName", "readName",
+        "read1contigName", "read1fivePrimePosition", "read1strand",
+        "read2contigName", "read2fivePrimePosition", "read2strand",
+        "score")
 
-    markBuckets(rdd.rdd.map(f => SingleReadBucket(f)), rdd.recordGroups)
-      .map(_.toFragment)
+    val duplicatesDf = findDuplicates(df)
+
+    rdd.dataset.join(duplicatesDf, Seq("recordGroupName", "readName"))
+      .as[(Fragment, Boolean)]
+      .map((f: Fragment, dup: Boolean) => {
+        f.getAlignments.forEach()
+      })
+
+      // todo thing...
+      .as[SingleReadBucket]
+      .rdd.map(_.toFragment)
+
+    rdd.dataset.foreach((fragment: Fragment) =>
+      fragment.getAlignments.forEach((alignment: AlignmentRecord) => {
+        alignment.setDuplicateRead()
+      })
+    )
+
+//    markBuckets(rdd.rdd.map(f => SingleReadBucket(f)), rdd.recordGroups)
+//      .map(_.toFragment)
   }
 
   /**
@@ -160,7 +189,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     *                   "read1contigName", "read1fivePrimePosition", "read1strand",
     *                   "read2contigName", "read2fivePrimePosition", "read2strand",
     *                   "score"
-    * @return A DataFrame with the following schema "recordGroupName", "readName", "duplicateFragemnt"
+    * @return A DataFrame with the following schema "recordGroupName", "readName", "duplicateFragment"
     *         indicating all of the fragments which have duplicate reads in them.
     */
   private def findDuplicates(fragmentDf: DataFrame): DataFrame = {
@@ -230,6 +259,10 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     */
   private def scoreRead(qual: String): Int = {
     qual.toCharArray.map(q => q - 33).filter(15 <=).sum
+  }
+
+  private def scoreBucket(bucket: SingleReadBucket): Int = {
+    bucket.primaryMapped.map(score).sum
   }
 
   private def isClipped(el: CigarElement): Boolean = {
