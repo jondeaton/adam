@@ -19,19 +19,19 @@ package org.bdgenomics.adam.rdd.read
 
 import org.bdgenomics.utils.misc.Logging
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{ DataFrame, Dataset, SQLContext }
+import org.apache.spark.sql._
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions
-import org.apache.spark.sql.functions.{ first, when, sum, countDistinct }
+import org.apache.spark.sql.functions.{countDistinct, first, sum, when}
 import org.bdgenomics.adam.instrumentation.Timers._
-import org.bdgenomics.adam.models.{ RecordGroupDictionary, ReferencePosition }
+import org.bdgenomics.adam.models.{RecordGroupDictionary, ReferencePosition}
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.rdd.fragment.FragmentRDD
 import org.bdgenomics.adam.rdd.read._
-import org.bdgenomics.adam.sql.{ AlignmentRecord => AlignmentRecordSchema }
-import org.bdgenomics.formats.avro.{ AlignmentRecord, Strand, Fragment }
+import org.bdgenomics.adam.sql.{AlignmentRecord => AlignmentRecordSchema}
+import org.bdgenomics.formats.avro.{AlignmentRecord, Fragment, Strand}
 import org.bdgenomics.adam.rich.RichAlignmentRecord
-import htsjdk.samtools.{ Cigar, CigarElement, CigarOperator, TextCigarCodec }
+import htsjdk.samtools.{Cigar, CigarElement, CigarOperator, TextCigarCodec}
+
 import scala.collection.JavaConversions._
 
 private[rdd] object MarkDuplicates extends Serializable with Logging {
@@ -50,7 +50,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     checkRecordGroups(alignmentRecords.recordGroups)
 
     val fragmentGroupedDf = groupReadsByFragment(alignmentRecords.dataset)
-      .join(libraryDf(alignmentRecords.recordGroups), "recordGroupName")
+      .join(libraryDf(alignmentRecords.recordGroups, alignmentRecords.dataset.sparkSession), "recordGroupName")
     val duplicatesDf = findDuplicates(fragmentGroupedDf)
 
     markDuplicates(alignmentRecords.dataset, duplicatesDf)
@@ -60,31 +60,32 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
   /**
     * Marks fragments as duplicates
-    * todo: make this work with minimal code duplication
-    * @param rdd
-    * @return
+    * @param rdd A genomic RDD representing a collection of fragments
+    * @return A RDD of fragments each having been specified as duplicate or not
     */
   def apply(rdd: FragmentRDD): RDD[Fragment] = {
     import rdd.dataset.sparkSession.implicits._
 
+    // converts a fragment to a tuple suitable for use in DataFrame
     def toFragmentSchema(fragment: Fragment, recordGroups: RecordGroupDictionary) = {
       val bucket = SingleReadBucket(fragment)
       val position = ReferencePositionPair(bucket)
 
-      val recordGroupName = bucket.allReads.headOption.fold()(_.getRecordGroupName)
+      val recordGroupName: Option[String] = bucket.allReads.headOption.fold(None)(_.getRecordGroupName)
       val library = recordGroups(recordGroupName)
 
-      // Reference positions of each read in the fragment
+      // reference positions of each read in the fragment
       val read1refPos = position.read1refPos
       val read2refPos = position.read2refPos
 
-      // Tuple that will be turned into a row in the dataframe
+      // tuple that will be turned into a row in the DataFrame
       (library , recordGroupName, fragment.getReadName,
         read1refPos.fold()(_.referenceName), read1refPos.fold()(_.pos), read1refPos.fold()(_.strand),
         read2refPos.fold()(_.referenceName), read2refPos.fold()(_.pos), read2refPos.fold()(_.strand),
         scoreBucket(bucket))
     }
 
+    // convert fragments to dataframe wtih reference positions and scores
     val df = rdd.rdd.map(toFragmentSchema(_, rdd.recordGroups))
       .toDF("library", "recordGroupName", "readName",
         "read1contigName", "read1fivePrimePosition", "read1strand",
@@ -92,8 +93,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         "score")
 
     val duplicatesDf = findDuplicates(df)
-
+    
     rdd.dataset.join(duplicatesDf, Seq("recordGroupName", "readName"))
+      .drop(rdd.dataset("duplicate"))
       .as[(Fragment, Boolean)]
       .map((f: Fragment, dup: Boolean) => {
         f.getAlignments.forEach()
@@ -124,13 +126,16 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   }
 
   /**
-    *
-    * @param alignmentRecords
-    * @return
+    * Groups alignment records (reads) by fragment while finding the reference positions and
+    * scores of each mapped read in each fragment.
+    * @param alignmentRecords Dataset of alignment records
+    * @return Dataframe with rows representing fragments made by grouping together the alignment
+    *         records by record group name and read name.
     */
   private def groupReadsByFragment(alignmentRecords: Dataset[AlignmentRecordSchema]): DataFrame = {
     import alignmentRecords.sqlContext.implicits._
 
+    // Find the 5' position of all alignment records
     val df = alignmentRecords
       .withColumn("fivePrimePosition",
         fivePrimePositionUDF('readMapped, 'readNegativeStrand, 'cigar, 'start, 'end))
@@ -184,8 +189,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     * @param fragmentDf A DataFrame representing genomic fragments
     *
     *                   This DataFrame should have the following schema:
-    *                   "library",
-    *                   "recordGroupName", "readName",
+    *                   "library", "recordGroupName", "readName",
     *                   "read1contigName", "read1fivePrimePosition", "read1strand",
     *                   "read2contigName", "read2fivePrimePosition", "read2strand",
     *                   "score"
@@ -232,6 +236,15 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .select("recordGroupName", "readName", "duplicateFragment")
   }
 
+  /**
+    * Marks each alignment record in an Dataset as duplicates based on information from a DataFrame
+    * which specified which of the alignment records are duplicates
+    * @param alignmentRecords Dataset of AlignmentRecords
+    * @param duplicatesDf DataFrame containing
+    * @return A DataFrame with the same schema as the alignmentRecords Dataset, but with reads having
+    *         been marked as duplicates in the "duplicateRead" column in accordance with the duplicatesDf
+    *         DataFrame which was provided.
+    */
   private def markDuplicates(alignmentRecords: Dataset[AlignmentRecordSchema], duplicatesDf: DataFrame): DataFrame = {
     import alignmentRecords.sparkSession.implicits._
     alignmentRecords
@@ -247,8 +260,6 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
             when('readMapped and !'primaryAlignment, true).otherwise(false)))
       .drop("duplicateFragment")
   }
-
-//  private def markBuckets(rdd: RDD[SingleReadBucket], recordGroups: RecordGroupDictionary): RDD[SingleReadBucket]  = { /* Old code */ }
 
   private def scoreReadUDF = functions.udf(scoreRead(_))
 
@@ -322,8 +333,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     *         same mapping from record group name to library that was found in the record
     *         group dictionary
     */
-  private def libraryDf(recordGroupDictionary: RecordGroupDictionary): DataFrame = {
-    // todo: import implicits?
+  private def libraryDf(recordGroupDictionary: RecordGroupDictionary, sparkSession: SparkSession): DataFrame = {
+    import sparkSession.implicits._
     recordGroupDictionary.recordGroupMap.mapValues(value => {
       val (recordGroup, _) = value
       recordGroup.library
