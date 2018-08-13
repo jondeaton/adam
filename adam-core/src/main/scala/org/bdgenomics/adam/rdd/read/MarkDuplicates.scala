@@ -60,11 +60,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
   /**
     * Marks fragments as duplicates
-    * @param rdd A genomic RDD representing a collection of fragments
+ *
+    * @param fragmentRdd A genomic RDD representing a collection of fragments
     * @return A RDD of fragments each having been specified as duplicate or not
     */
-  def apply(rdd: FragmentRDD): RDD[Fragment] = {
-    import rdd.dataset.sparkSession.implicits._
+  def apply(fragmentRdd: FragmentRDD): RDD[Fragment] = {
+    import fragmentRdd.dataset.sparkSession.implicits._
 
     // converts a fragment to a tuple suitable for use in DataFrame
     def toFragmentSchema(fragment: Fragment, recordGroups: RecordGroupDictionary) = {
@@ -86,16 +87,16 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     }
 
     // convert fragments to dataframe wtih reference positions and scores
-    val df = rdd.rdd.map(toFragmentSchema(_, rdd.recordGroups))
+    val df = fragmentRdd.rdd.map(toFragmentSchema(_, fragmentRdd.recordGroups))
       .toDF("library", "recordGroupName", "readName",
         "read1contigName", "read1fivePrimePosition", "read1strand",
         "read2contigName", "read2fivePrimePosition", "read2strand",
         "score")
 
     val duplicatesDf = findDuplicates(df)
-    
-    rdd.dataset.join(duplicatesDf, Seq("recordGroupName", "readName"))
-      .drop(rdd.dataset("duplicate"))
+
+    fragmentRdd.dataset.join(duplicatesDf, Seq("recordGroupName", "readName"))
+      .drop(fragmentRdd.dataset("duplicate"))
       .as[(Fragment, Boolean)]
       .map((f: Fragment, dup: Boolean) => {
         f.getAlignments.forEach()
@@ -105,7 +106,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .as[SingleReadBucket]
       .rdd.map(_.toFragment)
 
-    rdd.dataset.foreach((fragment: Fragment) =>
+    fragmentRdd.dataset.foreach((fragment: Fragment) =>
       fragment.getAlignments.forEach((alignment: AlignmentRecord) => {
         alignment.setDuplicateRead()
       })
