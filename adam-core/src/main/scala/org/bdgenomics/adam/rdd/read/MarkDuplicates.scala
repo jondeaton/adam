@@ -59,8 +59,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   }
 
   /**
-    * Marks fragments as duplicates
- *
+    * Marks fragments as duplicate
+    *
     * @param fragmentRdd A genomic RDD representing a collection of fragments
     * @return A RDD of fragments each having been specified as duplicate or not
     */
@@ -95,9 +95,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     val duplicatesDf = findDuplicates(df)
 
-    fragmentRdd.dataset.join(duplicatesDf, Seq("recordGroupName", "readName"))
-      .drop(fragmentRdd.dataset("duplicate"))
-      .as[(Fragment, Boolean)]
+    fragmentRdd.dataset.join(duplicatesDf, Seq("readName"))
+      .as[Fragment]
       .map((f: Fragment, dup: Boolean) => {
         f.getAlignments.forEach()
       })
@@ -111,6 +110,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         alignment.setDuplicateRead()
       })
     )
+
 
 //    markBuckets(rdd.rdd.map(f => SingleReadBucket(f)), rdd.recordGroups)
 //      .map(_.toFragment)
@@ -195,7 +195,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     *                   "read2contigName", "read2fivePrimePosition", "read2strand",
     *                   "score"
     * @return A DataFrame with the following schema "recordGroupName", "readName", "duplicateFragment"
-    *         indicating all of the fragments which have duplicate reads in them.
+    *         indicating all of the fragments which have duplicate reads in them in the "duplicateFragment"
+    *         column, which contains booleans.
     */
   private def findDuplicates(fragmentDf: DataFrame): DataFrame = {
     import fragmentDf.sparkSession.implicits._
