@@ -87,8 +87,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
       // tuple that will be turned into a row in the DataFrame
       (library, recordGroupName, fragment.getReadName,
-        read1refPos.fold()(_.referenceName), read1refPos.fold()(_.pos), read1refPos.fold()(_.strand),
-        read2refPos.fold()(_.referenceName), read2refPos.fold()(_.pos), read2refPos.fold()(_.strand),
+        read1refPos.map(_.referenceName), read1refPos.map(_.pos), read1refPos.map(_.strand),
+        read2refPos.map(_.referenceName), read2refPos.map(_.pos), read2refPos.map(_.strand),
         scoreBucket(bucket))
     }
 
