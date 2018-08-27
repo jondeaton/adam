@@ -34,7 +34,7 @@ import htsjdk.samtools.{ Cigar, CigarElement, CigarOperator, TextCigarCodec }
 
 import scala.collection.JavaConversions._
 
-// todo: this is a class that merely extends the fragmetn schema by a single field so that we
+// todo: this is a class that merely extends the fragment schema by a single field so that we
 // can join in the duplicate information and then propagate it down into the alignments
 case class FragmentDuplicateSchema(readName: String, instrument: String, runId: String, fragmentSize: Int,
                                    duplicateFragment: Boolean,

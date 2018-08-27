@@ -17,6 +17,9 @@
  */
 package org.bdgenomics.adam.rdd.read
 
+import org.scalatest.Tag
+object OneShot extends Tag("org.bdgenomics.adam.rdd.read.MarkDuplicates")
+
 import java.util.UUID
 import org.bdgenomics.adam.models.{
   RecordGroup,
@@ -104,7 +107,7 @@ class MarkDuplicatesSuite extends ADAMFunSuite {
       .collect()
   }
 
-  sparkTest("single read") {
+  sparkTest("single read", OneShot) {
     val read = createMappedRead("0", 100, 200)
     val marked = markDuplicates(read)
     // Can't have duplicates with a single read, should return the read unchanged.
