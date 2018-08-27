@@ -57,6 +57,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     val fragmentGroupedDf = groupReadsByFragment(alignmentRecords.dataset)
       .join(libraryDf(alignmentRecords.recordGroups, alignmentRecords.dataset.sparkSession), "recordGroupName")
+
     val duplicatesDf = findDuplicates(fragmentGroupedDf)
 
     markDuplicates(alignmentRecords.dataset, duplicatesDf)
@@ -182,7 +183,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           as 'read2strand,
 
         // Fragment score
-        sum(when('readMapped and 'primaryAlignment, scoreReadUDF('qual)) as 'score))
+        sum(when('readMapped and 'primaryAlignment, scoreReadUDF('qual))) as 'score)
   }
 
   /**
