@@ -31,6 +31,7 @@ import org.bdgenomics.adam.sql.{ AlignmentRecord => AlignmentRecordSchema }
 import org.bdgenomics.formats.avro.{ AlignmentRecord, Fragment, Strand }
 import org.bdgenomics.adam.rich.RichAlignmentRecord
 import htsjdk.samtools.{ Cigar, CigarElement, CigarOperator, TextCigarCodec }
+import org.apache.spark.SparkConf
 
 import scala.collection.JavaConversions._
 
@@ -56,9 +57,10 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     checkRecordGroups(alignmentRecords.recordGroups)
 
     val fragmentGroupedDf = groupReadsByFragment(alignmentRecords.dataset)
-      .join(libraryDf(alignmentRecords.recordGroups, alignmentRecords.dataset.sparkSession), "recordGroupName")
+    val libDf = libraryDf(alignmentRecords.recordGroups, alignmentRecords.dataset.sparkSession)
+    val withLibDf = fragmentGroupedDf.join(libDf, "recordGroupName")
 
-    val duplicatesDf = findDuplicates(fragmentGroupedDf)
+    val duplicatesDf = findDuplicates(withLibDf)
 
     markDuplicates(alignmentRecords.dataset, duplicatesDf)
       .as[AlignmentRecordSchema]
@@ -146,17 +148,19 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     df.groupBy("recordGroupName", "readName")
       .agg(
 
-        // Read 1 Reference Position
+        // Read 1 reference position (Contig Name)
         first(when('primaryAlignment and 'readInFragment === 0,
           when('readMapped, 'contigName).otherwise('sequence)),
           ignoreNulls = true)
           as 'read1contigName,
 
+        // Read 1 reference position (5' position)
         first(when('primaryAlignment and 'readInFragment === 0,
           when('readMapped, 'fivePrimePosition).otherwise(0L)),
           ignoreNulls = true)
           as 'read1fivePrimePosition,
 
+        // Read 1 reference position (strand)
         first(when('primaryAlignment and 'readInFragment === 0,
           when('readMapped,
             when('readNegativeStrand, Strand.REVERSE.toString).otherwise(Strand.FORWARD.toString))
@@ -164,17 +168,19 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
           ignoreNulls = true)
           as 'read1strand,
 
-        // Read 2 Reference Position
+        // Read 2 reference position (Contig Name)
         first(when('primaryAlignment and 'readInFragment === 1,
           when('readMapped, 'contigName).otherwise('sequence)),
           ignoreNulls = true)
           as 'read2contigName,
 
+        // Read 2 reference position (5' position)
         first(when('primaryAlignment and 'readInFragment === 1,
           when('readMapped, 'fivePrimePosition).otherwise(0L)),
           ignoreNulls = true)
           as 'read2fivePrimePosition,
 
+        // Read 2 reference position (strand)
         first(when('primaryAlignment and 'readInFragment === 1,
           when('readMapped,
             when('readNegativeStrand, Strand.REVERSE.toString).otherwise(Strand.FORWARD.toString))
@@ -203,10 +209,10 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     import fragmentDf.sparkSession.implicits._
 
     // Window into fragments grouped by left and right reference positions
-    val positionWindow = Window
-      .partitionBy('library,
-        'read1contigName, 'read1fivePrimePosition, 'read1strand,
-        'read2contigName, 'read2fivePrimePosition, 'read2strand)
+    val positionWindow = Window.partitionBy(
+      'library,
+      'read1contigName, 'read1fivePrimePosition, 'read1strand,
+      'read2contigName, 'read2fivePrimePosition, 'read2strand)
       .orderBy('score.desc)
 
     // Discard unmapped left position reads
@@ -239,41 +245,64 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .select("recordGroupName", "readName", "duplicateFragment")
   }
 
+//  private def joinGoupCounts(fragmentDf: DataFrame, groupCountDf: DataFrame): DataFrame = {
+//
+//
+//  }
+
   /**
-   * Marks each alignment record in an Dataset as duplicates based on information from a DataFrame
-   * which specified which of the alignment records are duplicates
+   * Marks each alignment record in the Dataset `alignmentRecords` as a duplicate based on duplicate information
+   * from a DataFrame specifying which fragments found in the collection of alignment records are duplicates.
+   * Each read will be marked as a duplicate if it is a primary alignments and part of a duplicate fragment
+   * or if it is a mapped read but not a primary alignment.
+   * Unmapped reads will not be marked as duplicate.
    * @param alignmentRecords Dataset of AlignmentRecords
-   * @param duplicatesDf DataFrame containing
-   * @return A DataFrame with the same schema as the alignmentRecords Dataset, but with reads having
-   *         been marked as duplicates in the "duplicateRead" column in accordance with the duplicatesDf
+   * @param duplicatesDf DataFrame containing information about each
+   * @return A DataFrame with the same schema as `alignmentRecords`  but with reads having
+   *         been marked as duplicates in the "duplicateRead" column in accordance with `duplicatesDf`
    *         DataFrame which was provided.
    */
   private def markDuplicates(alignmentRecords: Dataset[AlignmentRecordSchema], duplicatesDf: DataFrame): DataFrame = {
     import alignmentRecords.sparkSession.implicits._
-    alignmentRecords
-      .drop("duplicateRead")
-      .join(duplicatesDf,
-        alignmentRecords("recordGroupName") === duplicatesDf("recordGroupName").alias("rgn1") and
-          alignmentRecords("readName") === duplicatesDf("readName").alias("rn"))
+    addDuplicateFragmentInfo(alignmentRecords, duplicatesDf)
+      .withColumn("duplicateRead", 'readMapped and ('duplicateFragment or !'primaryAlignment))
+      .drop("duplicateFragment")
+  }
+
+  /**
+   * Adds information about which fragments are duplicates given in `duplicatesDf` to a dataset of alignment records
+   * @param alignmentRecords Dataset of alignment records to add duplicate fragment info to
+   * @param duplicatesDf DataFrame with columns "recordGroupName", "readName" and "duplicateFragment" indicating
+   *                     for each fragment (identified by "record
+   * @return A new DataFrame identical to `alignmentRecords` but with an extra boolean column "duplicateFragment"
+   *         indicating for each alignment record whether or not it is part of a duplicate framgnet
+   */
+  private def addDuplicateFragmentInfo(alignmentRecords: Dataset[AlignmentRecordSchema],
+                                       duplicatesDf: DataFrame): DataFrame = {
+    alignmentRecords.join(duplicatesDf,
+      alignmentRecords("recordGroupName") === duplicatesDf("recordGroupName").alias("recordGroupName_alias") and
+        alignmentRecords("readName") === duplicatesDf("readName").alias("readName_alias"))
       .drop(duplicatesDf("recordGroupName"))
       .drop(duplicatesDf("readName"))
-      .withColumn("duplicateRead",
-        when('readMapped, 'duplicateFragment or !'primaryAlignment)
-          .otherwise(false))
-      .drop("duplicateFragment")
   }
 
   private def scoreReadUDF = functions.udf((qual: String) => scoreRead(qual))
 
   /**
    * Scores a single read based on it's quality.
-   * @param qual
-   * @return
+   * @param qual Base64 encoded quality score string
+   * @return Sum of quality score minus 33 for all quality scores GTE 15
    */
   private def scoreRead(qual: String): Int = {
     qual.toCharArray.map(q => q - 33).filter(15 <=).sum
   }
 
+  /**
+   * Calculates the score for a bucket of reads. The score is given by
+   * the sum of quality scores for each primary aligned read in the bucket
+   * @param bucket collection of reads
+   * @return sum of quality scores for each primary mapped read in the bucket
+   */
   private def scoreBucket(bucket: SingleReadBucket): Int = {
     bucket.primaryMapped.map(score).sum
   }
