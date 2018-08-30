@@ -77,35 +77,17 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   def apply(fragmentRdd: FragmentRDD): RDD[Fragment] = {
     import fragmentRdd.dataset.sparkSession.implicits._
 
-    // converts a fragment to a tuple suitable for use in DataFrame
-    def toFragmentSchema(fragment: Fragment, recordGroups: RecordGroupDictionary) = {
-      val bucket = SingleReadBucket(fragment)
-      val position = ReferencePositionPair(bucket)
-
-      val recordGroupName: Option[String] = bucket.allReads.headOption.flatMap(r => Some(r.getRecordGroupName))
-      val library: Option[String] = recordGroupName.flatMap(name => recordGroups(name).library)
-
-      // reference positions of each read in the fragment
-      val read1refPos = position.read1refPos
-      val read2refPos = position.read2refPos
-
-      // tuple that will be turned into a row in the DataFrame
-      (library, recordGroupName, fragment.getReadName,
-        read1refPos.map(_.referenceName), read1refPos.map(_.pos), read1refPos.map(_.strand),
-        read2refPos.map(_.referenceName), read2refPos.map(_.pos), read2refPos.map(_.strand),
-        scoreBucket(bucket))
-    }
-
     // convert fragments to DataFrame with reference positions and scores
-    val df = fragmentRdd.rdd
-      .map(toFragmentSchema(_, fragmentRdd.recordGroups)).toDF(
+    val fragmentDf = fragmentRdd.rdd
+      .map(toFragmentSchema(_, fragmentRdd.recordGroups))
+      .toDF(
         "library", "recordGroupName", "readName",
         "read1contigName", "read1fivePrimePosition", "read1strand",
         "read2contigName", "read2fivePrimePosition", "read2strand",
         "score")
 
     // find the duplicates (top scoring fragments after grouping by left and right position)
-    val duplicatesDf = findDuplicates(df)
+    val duplicatesDf = findDuplicates(fragmentDf)
 
     // mark the identified duplicates in the original Dataset and convert Spark SQL Dataset back to RDD
     markDuplicateFragments(fragmentRdd.dataset, duplicatesDf)
@@ -117,7 +99,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
    * Groups alignment records (reads) by fragment while finding the reference positions and
    * scores of each mapped read in each fragment.
    * @param alignmentRecords Dataset of alignment records
-   * @return Dataframe with rows representing fragments made by grouping together the alignment
+   * @return DataFrame with rows representing fragments made by grouping together the alignment
    *         records by record group name and read name.
    */
   private def groupReadsByFragment(alignmentRecords: Dataset[AlignmentRecordSchema]): DataFrame = {
@@ -178,14 +160,13 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   }
 
   /**
-   *
-   * @param fragmentDf A DataFrame representing genomic fragments
-   *
-   *                   This DataFrame should have the following schema:
-   *                   "library", "recordGroupName", "readName",
+   * Identifies duplicates among a collection of fragments. Duplicates are those fragments which are not the
+   * highest scoring fragment among those with the same left and right reference positions or those with unmapped
+   * right position and group count is equal to zero.
+   * @param fragmentDf A DataFrame representing genomic fragments with the following schema:
+   *                   "library", "recordGroupName", "readName", "score",
    *                   "read1contigName", "read1fivePrimePosition", "read1strand",
-   *                   "read2contigName", "read2fivePrimePosition", "read2strand",
-   *                   "score"
+   *                   "read2contigName", "read2fivePrimePosition", "read2strand"
    * @return A DataFrame with the following schema "recordGroupName", "readName", "duplicateFragment"
    *         indicating all of the fragments which have duplicate reads in them in the "duplicateFragment"
    *         column, which contains booleans.
@@ -221,8 +202,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   /**
    * Calculates the number of distinct right positions for each group of left reference positions
    * and joins this information back with the original DataFrame
-   * @param fragmentDf Dataframe of fragments containing left and right reference positions
-   * @return Dataframe identical to `fragmentDf` but with additional column "groupCount" equal to the number of
+   * @param fragmentDf DataFrame of fragments containing left and right reference positions
+   * @return DataFrame identical to `fragmentDf` but with additional column "groupCount" equal to the number of
    *         distinct right reference positions among all fragments with the same left reference position as that row
    */
   private def calculateGroupCounts(fragmentDf: DataFrame): DataFrame = {
@@ -246,7 +227,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
   /**
    * Calculates the number of distinct right positions for each group of left reference positions
-   * @param fragmentsDf Dataframe of fragments containing left and right reference positions
+   * @param fragmentsDf DataFrame of fragments containing left and right reference positions
    * @return DataFrame indicating for each left-reference position the group "groupCount" which is equal to the
    *         number of distinct right reference positions among all fragments with the same left
    *         reference position as that row
@@ -317,6 +298,32 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       .withColumn("duplicateFragment", 'duplicateFragment.isNotNull and 'duplicateFragment)
   }
 
+  /**
+   * Converts a fragment to a tuple suitable for use as a row in a DataFrame with schema `FragmentSchema`
+   * @param fragment The fragment to convert into a tuple
+   * @param recordGroups Dictionary mapping record group name to library
+   * @return Tuple containing library, record group name, read name, score, and left and right reference positions.
+   *         For the fragment. The left and right reference positions are given by the reference name, five prime
+   *         position and strand of the first and second read in the fragment, respectively.
+   */
+  private def toFragmentSchema(fragment: Fragment, recordGroups: RecordGroupDictionary) = {
+    val bucket = SingleReadBucket(fragment)
+    val position = ReferencePositionPair(bucket)
+
+    val recordGroupName: Option[String] = bucket.allReads.headOption.flatMap(r => Some(r.getRecordGroupName))
+    val library: Option[String] = recordGroupName.flatMap(name => recordGroups(name).library)
+
+    // reference positions of each read in the fragment
+    val read1refPos = position.read1refPos
+    val read2refPos = position.read2refPos
+
+    // tuple that will be turned into a row in the DataFrame
+    (library, recordGroupName, fragment.getReadName,
+      read1refPos.map(_.referenceName), read1refPos.map(_.pos), read1refPos.map(_.strand),
+      read2refPos.map(_.referenceName), read2refPos.map(_.pos), read2refPos.map(_.strand),
+      scoreBucket(bucket))
+  }
+
   /* User defined aggregate function for calculating the "score" of a fragment */
   private def scoreReadUDF = functions.udf((qual: String) => scoreRead(qual))
 
@@ -327,7 +334,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
    * @return The "score" of the read, given by the sum of all quality scores greater than 15
    */
   def score(record: AlignmentRecord): Int = {
-    record.qualityScores.filter(15 <=).sum
+    record.qualityScores.filter(15 <= _).sum
   }
 
   /**
@@ -336,7 +343,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
    * @return Sum of quality score minus 33 for all quality scores GTE 15
    */
   private def scoreRead(qual: String): Int = {
-    qual.toCharArray.map(q => q - 33).filter(15 <=).sum
+    qual.toCharArray.map(q => q - 33).filter(15 <= _).sum
   }
 
   /**
