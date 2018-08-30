@@ -129,7 +129,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         fivePrimePositionUDF('readMapped, 'readNegativeStrand, 'cigar, 'start, 'end))
 
     // Group all fragments, finding read 1 & 2 reference positions and scores
-    df.groupBy("recordGroupName", "readName")
+    df
+      .groupBy("recordGroupName", "readName")
       .agg(
 
         // Read 1 reference position (contig name)
@@ -312,12 +313,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   private def addDuplicateFragmentInfo(alignmentRecords: Dataset[AlignmentRecordSchema],
                                        duplicatesDf: DataFrame): DataFrame = {
     import alignmentRecords.sparkSession.implicits._
-    alignmentRecords.join(duplicatesDf,
-      alignmentRecords("recordGroupName") === duplicatesDf("recordGroupName").alias("recordGroupName_alias") and
-        alignmentRecords("readName") === duplicatesDf("readName").alias("readName_alias"),
-      "left")
-      .drop(duplicatesDf("recordGroupName"))
-      .drop(duplicatesDf("readName"))
+    alignmentRecords.join(duplicatesDf, Seq("readName", "recordGroupName"), "left")
       .withColumn("duplicateFragment", 'duplicateFragment.isNotNull and 'duplicateFragment)
   }
 
