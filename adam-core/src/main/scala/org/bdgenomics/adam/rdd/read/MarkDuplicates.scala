@@ -314,9 +314,11 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     import alignmentRecords.sparkSession.implicits._
     alignmentRecords.join(duplicatesDf,
       alignmentRecords("recordGroupName") === duplicatesDf("recordGroupName").alias("recordGroupName_alias") and
-        alignmentRecords("readName") === duplicatesDf("readName").alias("readName_alias"))
+        alignmentRecords("readName") === duplicatesDf("readName").alias("readName_alias"),
+      "left")
       .drop(duplicatesDf("recordGroupName"))
       .drop(duplicatesDf("readName"))
+      .withColumn("duplicateFragment", 'duplicateFragment.isNotNull and 'duplicateFragment)
   }
 
   /* User defined aggregate function for calculating the "score" of a fragment */
