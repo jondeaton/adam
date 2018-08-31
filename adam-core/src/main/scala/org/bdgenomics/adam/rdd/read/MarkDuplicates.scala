@@ -176,7 +176,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // discard reads with unmapped left position
     val filteredDf = fragmentDf
-      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
+    //      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
 
     // this DataFrame has an extra column "groupCount" which is the number of distinct
     // right reference positions for fragments grouped by left reference position
@@ -197,12 +197,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // todo: are getting marked as duplicate fragments on account of being secondary alignments
     // todo: but in actuality they should have been filtered out originally and never considered!
     val duplicatesDf = withGroupCount.withColumn("duplicateFragment",
-      when('read1contigName.isNull and 'read1fivePrimePosition.isNull and 'read1strand.isNull, false)
-          .otherwise(
-            row_number.over(positionWindow) =!= 1
-              or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)
-          )
-        )
+      //      when('read1contigName.isNull and 'read1fivePrimePosition.isNull and 'read1strand.isNull, false)
+      //          .otherwise(
+      row_number.over(positionWindow) =!= 1
+        or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)
+    //          )
+    )
 
     // result is just the relation between fragment and duplicate status
     duplicatesDf.select("recordGroupName", "readName", "duplicateFragment")
@@ -263,8 +263,24 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   private def markDuplicates(alignmentRecords: Dataset[AlignmentRecordSchema], duplicatesDf: DataFrame): DataFrame = {
     import alignmentRecords.sparkSession.implicits._
     addDuplicateFragmentInfo(alignmentRecords, duplicatesDf)
-      .withColumn("duplicateRead", 'readMapped and ('duplicateFragment or !'primaryAlignment))
+      .withColumn("duplicateRead",
+        'duplicateFragment.isNotNull and 'readMapped and ('duplicateFragment or !'primaryAlignment))
       .drop("duplicateFragment") // drop the temporary column for marking duplicate fragments
+  }
+
+  /**
+   * Adds information about which fragments are duplicates given in `duplicatesDf` to a dataset of alignment records
+   * @param alignmentRecords Dataset of alignment records to add duplicate fragment info to
+   * @param duplicatesDf DataFrame with columns "recordGroupName", "readName" and "duplicateFragment" indicating
+   *                     for each fragment (identified by "record
+   * @return A new DataFrame identical to `alignmentRecords` but with an extra boolean column "duplicateFragment"
+   *         indicating for each alignment record whether or not it is part of a duplicate fragment
+   */
+  private def addDuplicateFragmentInfo(alignmentRecords: Dataset[AlignmentRecordSchema],
+                                       duplicatesDf: DataFrame): DataFrame = {
+    import alignmentRecords.sparkSession.implicits._
+    alignmentRecords.join(duplicatesDf, Seq("readName", "recordGroupName"), "left")
+    //      .withColumn("duplicateFragment", 'duplicateFragment.isNotNull and 'duplicateFragment)
   }
 
   private def markDuplicateFragments(fragmentDs: Dataset[FragmentSchema],
@@ -290,21 +306,6 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
         markReadsInFragment(fragment)
         fragment
       })
-  }
-
-  /**
-   * Adds information about which fragments are duplicates given in `duplicatesDf` to a dataset of alignment records
-   * @param alignmentRecords Dataset of alignment records to add duplicate fragment info to
-   * @param duplicatesDf DataFrame with columns "recordGroupName", "readName" and "duplicateFragment" indicating
-   *                     for each fragment (identified by "record
-   * @return A new DataFrame identical to `alignmentRecords` but with an extra boolean column "duplicateFragment"
-   *         indicating for each alignment record whether or not it is part of a duplicate fragment
-   */
-  private def addDuplicateFragmentInfo(alignmentRecords: Dataset[AlignmentRecordSchema],
-                                       duplicatesDf: DataFrame): DataFrame = {
-    import alignmentRecords.sparkSession.implicits._
-    alignmentRecords.join(duplicatesDf, Seq("readName", "recordGroupName"), "left")
-      .withColumn("duplicateFragment", 'duplicateFragment.isNotNull and 'duplicateFragment)
   }
 
   /**
