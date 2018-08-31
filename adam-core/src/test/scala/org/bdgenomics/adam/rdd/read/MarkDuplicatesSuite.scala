@@ -33,14 +33,16 @@ class MarkDuplicatesSuite extends ADAMFunSuite {
       "machine foo",
       library = Some("library bar"))))
 
-  def createUnmappedRead() = {
+  private def createUnmappedRead(primaryAlignment:Boolean = true): AlignmentRecord = {
     AlignmentRecord.newBuilder()
       .setReadMapped(false)
       .setSequence("ACGT")
+      .setPrimaryAlignment(primaryAlignment)
+      .setSecondaryAlignment(!primaryAlignment)
       .build()
   }
 
-  def createMappedRead(referenceName: String, start: Long, end: Long,
+  private def createMappedRead(referenceName: String, start: Long, end: Long,
                        readName: String = UUID.randomUUID().toString, avgPhredScore: Int = 20,
                        numClippedBases: Int = 0, isPrimaryAlignment: Boolean = true,
                        isNegativeStrand: Boolean = false) = {
@@ -160,6 +162,14 @@ class MarkDuplicatesSuite extends ADAMFunSuite {
     val marked = markDuplicates(unmappedReads: _*)
     assert(marked.length == unmappedReads.size)
     // Unmapped reads should never be marked duplicates
+    assert(marked.forall(p => !p.getDuplicateRead))
+  }
+
+  sparkTest("unmapped secondary alignments") {
+    val unmappedReads = for (i <- 0 until 10) yield createUnmappedRead(primaryAlignment = i < 10)
+    val marked = markDuplicates(unmappedReads: _*)
+    assert(marked.length == unmappedReads.size)
+    // Unmapped reads should never be marked duplicates, *even if they are secondary alignments*
     assert(marked.forall(p => !p.getDuplicateRead))
   }
 
