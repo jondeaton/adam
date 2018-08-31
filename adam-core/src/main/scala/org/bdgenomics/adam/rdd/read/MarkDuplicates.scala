@@ -271,7 +271,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // find the duplicates (top scoring fragments after grouping by left and right position)
     val duplicatesDf = findDuplicates(fragmentDf)
 
-      markDuplicateFragments(fragmentRdd.dataset, duplicatesDf)
+    markDuplicateFragments(fragmentRdd.dataset, duplicatesDf)
       .rdd.map(_.toAvro)
   }
 
@@ -280,7 +280,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     def isDuplicate(readMapped: Option[Boolean], duplicateFragment: Option[Boolean],
                     primaryAlignment: Option[Boolean]): Boolean = {
-      readMapped.getOrElse(false) && (duplicateFragment.getOrElse(false) || primaryAlignment.getOrElse(false))
+      readMapped.getOrElse(false) && (duplicateFragment.getOrElse(false) || !primaryAlignment.getOrElse(false))
     }
 
     def toMarkedFragment(fragment: FragmentDuplicateSchema): FragmentSchema = {
@@ -298,11 +298,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     }
 
     import fragmentDs.sparkSession.implicits._
-    fragmentDs.join(duplicatesDf, Seq("readName"))
+    fragmentDs.join(duplicatesDf, Seq("readName"), "left")
       .as[FragmentDuplicateSchema]
-      .map(fragment => {
-        toMarkedFragment(fragment)
-      })
+      .map(toMarkedFragment)
   }
 
   /**
@@ -318,7 +316,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val position = ReferencePositionPair(bucket)
 
     val recordGroupName: Option[String] = bucket.allReads.headOption.flatMap(r => Some(r.getRecordGroupName))
-    val library: Option[String] = recordGroupName.flatMap(name => recordGroups(name).library)
+    val library: Option[String] = recordGroupName.flatMap(name => if (name == null) None else recordGroups(name).library)
 
     // reference positions of each read in the fragment
     val read1refPos = position.read1refPos
