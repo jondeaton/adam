@@ -176,7 +176,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // discard reads with unmapped left position
     val filteredDf = fragmentDf
-      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
+//      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
 
     // this DataFrame has an extra column "groupCount" which is the number of distinct
     // right reference positions for fragments grouped by left reference position
@@ -191,9 +191,15 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // duplicates are those fragments which are not the highest scoring fragment among those with the same
     // left and right reference positions or those with unmapped right position and group count is equal to zero
+    // todo: test this please! Also please test what happens with the regular code where you filter out
+    // todo: reads that have an unmapped left position and then simply set those places to NULL.
+    // todo: The issue is that all of the reads which WERE filtered out and were secondaryAlignments
+    // todo: are getting marked as duplicate fragments on account of being secondary alignments
+    // todo: but in actuality they should have been filtered out originally and never considered!
     val duplicatesDf = withGroupCount.withColumn("duplicateFragment",
-      row_number.over(positionWindow) =!= 1
-        or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0))
+      when('read1contigName.isNull and 'read1fivePrimePosition.isNull and 'read1strand.isNull, false)
+        .otherwise(row_number.over(positionWindow) =!= 1
+          or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)))
 
     // result is just the relation between fragment and duplicate status
     duplicatesDf.select("recordGroupName", "readName", "duplicateFragment")
@@ -254,7 +260,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   private def markDuplicates(alignmentRecords: Dataset[AlignmentRecordSchema], duplicatesDf: DataFrame): DataFrame = {
     import alignmentRecords.sparkSession.implicits._
     addDuplicateFragmentInfo(alignmentRecords, duplicatesDf)
-      .withColumn("duplicateRead", 'readMapped and ('duplicateFragment or !'primaryAlignment))
+      .withColumn("duplicateRead", 'readMapped and ('duplicateFragment or 'secondaryAlignment))
       .drop("duplicateFragment") // drop the temporary column for marking duplicate fragments
   }
 
