@@ -176,7 +176,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
 
     // discard reads with unmapped left position
     val filteredDf = fragmentDf
-    //      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
+      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
 
     // this DataFrame has an extra column "groupCount" which is the number of distinct
     // right reference positions for fragments grouped by left reference position
