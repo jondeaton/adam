@@ -261,7 +261,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   private def markDuplicates(alignmentRecords: Dataset[AlignmentRecordSchema], duplicatesDf: DataFrame): DataFrame = {
     import alignmentRecords.sparkSession.implicits._
     addDuplicateFragmentInfo(alignmentRecords, duplicatesDf)
-      .withColumn("duplicateRead", 'readMapped and ('duplicateFragment or 'secondaryAlignment))
+      .withColumn("duplicateRead", 'readMapped and ('duplicateFragment or !'primaryAlignment))
       .drop("duplicateFragment") // drop the temporary column for marking duplicate fragments
   }
 
