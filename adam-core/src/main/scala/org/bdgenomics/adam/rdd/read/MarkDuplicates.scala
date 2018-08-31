@@ -174,13 +174,9 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
   private def findDuplicates(fragmentDf: DataFrame): DataFrame = {
     import fragmentDf.sparkSession.implicits._
 
-    // discard reads with unmapped left position
-    val filteredDf = fragmentDf
-      .filter('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
-
     // this DataFrame has an extra column "groupCount" which is the number of distinct
     // right reference positions for fragments grouped by left reference position
-    val withGroupCount = calculateGroupCounts(filteredDf)
+    val withGroupCount = calculateGroupCounts(fragmentDf)
 
     // Window into fragments grouped by left and right reference positions
     val positionWindow = Window.partitionBy(
@@ -197,11 +193,12 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     // todo: are getting marked as duplicate fragments on account of being secondary alignments
     // todo: but in actuality they should have been filtered out originally and never considered!
     val duplicatesDf = withGroupCount.withColumn("duplicateFragment",
-      //      when('read1contigName.isNull and 'read1fivePrimePosition.isNull and 'read1strand.isNull, false)
-      //          .otherwise(
-      row_number.over(positionWindow) =!= 1
-        or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)
-    //          )
+      ('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
+      and (
+
+        row_number.over(positionWindow) =!= 1
+            or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)
+        )
     )
 
     // result is just the relation between fragment and duplicate status
