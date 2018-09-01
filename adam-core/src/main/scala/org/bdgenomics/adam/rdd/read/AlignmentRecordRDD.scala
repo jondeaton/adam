@@ -779,7 +779,7 @@ sealed abstract class AlignmentRecordRDD extends AvroRecordGroupGenomicDataset[A
       val binaryCodec = new BinaryCodec(compressedOut)
 
       // write a bam header - cribbed from Hadoop-BAM
-      binaryCodec.writeBytes("BAM\001".getBytes())
+      binaryCodec.writeBytes("BAM\u0001".getBytes())
       val sw: Writer = new StringWriter()
       new SAMTextHeaderCodec().encode(sw, header)
       binaryCodec.writeString(sw.toString, true, false)

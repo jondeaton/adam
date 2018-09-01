@@ -3084,7 +3084,7 @@ trait GenomicDataset[T, U <: Product, V <: GenomicDataset[T, U, V]] extends Logg
 }
 
 // we pass these conversion functions back and forth between the various
-// generic genomic datset implementations, so it makes sense to bundle
+// generic genomic dataset implementations, so it makes sense to bundle
 // them up in a case class
 case class GenericConverter[T, U] private (regionFn: T => Seq[ReferenceRegion],
                                            productFn: T => U,
@@ -3133,7 +3133,7 @@ sealed abstract class GenericGenomicDataset[T, U <: Product] extends GenomicData
 // genomic dataset classes also require classtags and typetags. this is
 // problematic, as the way that the scala compiler supplies these is through
 // arguments that are added to the constructor. there doesn't seem to be an
-// obvious way to eliminate adding these to the constuctor, unless you remove
+// obvious way to eliminate adding these to the constructor, unless you remove
 // the TypeTag view bound and find a way to supply the typetags and classtags
 // through some other means.
 //
