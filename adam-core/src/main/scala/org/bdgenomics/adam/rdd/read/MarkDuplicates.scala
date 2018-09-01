@@ -154,11 +154,8 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     val duplicatesDf = withGroupCount.withColumn("duplicateFragment",
       ('read1contigName.isNotNull and 'read1fivePrimePosition.isNotNull and 'read1strand.isNotNull)
       and (
-
         row_number.over(positionWindow) =!= 1
-            or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)
-        )
-    )
+            or ('read2contigName.isNull and 'read2fivePrimePosition.isNull and 'read2strand.isNull and 'groupCount > 0)))
 
     // result is just the relation between fragment and duplicate status
     duplicatesDf.select("recordGroupName", "readName", "duplicateFragment")
