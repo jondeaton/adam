@@ -181,7 +181,7 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
       (fragmentDf("library") === groupCountDf("library").alias("library_alias") or
         (fragmentDf("library").isNull and groupCountDf("library").isNull)) and
         fragmentDf("read1contigName") === groupCountDf("read1contigName").alias("contigName_alias") and
-        fragmentDf("read1fivePrimePosition") === groupCountDf("read1fivePrimePosition").alias("5p_alias") and
+        fragmentDf("read1fivePrimePosition") === groupCountDf("read1fivePrimePosition").alias("5P_alias") and
         fragmentDf("read1strand") === groupCountDf("read1strand").alias("strand_alias"),
       "left")
       .drop(groupCountDf("library"))
@@ -361,14 +361,27 @@ private[rdd] object MarkDuplicates extends Serializable with Logging {
     bucket.primaryMapped.map(score).sum
   }
 
+  /* Determines if a Cigar Element operator is a clipp*/
   private def isClipped(el: CigarElement): Boolean = {
     el.getOperator == CigarOperator.SOFT_CLIP || el.getOperator == CigarOperator.HARD_CLIP
   }
 
+  /* Spark SQL UDF wrapper for finding the 5' reference position of an alignment. */
   private def fivePrimePositionUDF = functions.udf(
     (readMapped: Boolean, readNegativeStrand: Boolean, cigar: String, start: Long, end: Long) =>
       fivePrimePosition(readMapped, readNegativeStrand, cigar, start, end))
 
+  /**
+    * Determines the five prime reference position for an alignment record by discarding clipped base pairs
+    * @param readMapped Whether the read is mapped to a reference
+    * @param readNegativeStrand Whether the mapping is on the negative strand
+    * @param cigar Cigar string describing the alignment
+    * @param start reference position of the start of the alignment
+    * @param end reference position of the end of the alignment
+    * @return Reference position of the start of the alignment. For mapped reads this means discarding
+    *         clipped base pairs form the start and end of the alignment depending on whether the alignment
+    *         is on the positive or negative strand, respectively.
+    */
   private def fivePrimePosition(readMapped: Boolean, readNegativeStrand: Boolean, cigar: String,
                                 start: Long, end: Long): Long = {
     if (!readMapped) 0L
