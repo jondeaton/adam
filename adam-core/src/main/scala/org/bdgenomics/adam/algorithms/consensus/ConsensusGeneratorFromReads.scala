@@ -56,10 +56,10 @@ private[adam] class ConsensusGeneratorFromReads extends ConsensusGenerator {
       // if there are two alignment blocks (sequence matches) then there is a single indel in the read
       if (numAlignmentBlocks(r.samtoolsCigar) == 2) {
         // left align this indel and update the mdtag
-        val cigar = NormalizationUtils.leftAlignIndel(r)
+        val cigar = NormalizationUtils.leftAlignIndel(r.asInstanceOf[AlignmentRecord])
         val mdTag = MdTag.moveAlignment(r, cigar)
 
-        val newRead: RichAlignmentRecord = AlignmentRecord.newBuilder(r)
+        val newRead: RichAlignmentRecord = AlignmentRecord.newBuilder(r.asInstanceOf[AlignmentRecord])
           .setCigar(cigar.toString)
           .setMismatchingPositions(mdTag.toString())
           .build()
@@ -88,13 +88,14 @@ private[adam] class ConsensusGeneratorFromReads extends ConsensusGenerator {
       .flatMap(r => {
         // try to generate a consensus alignment - if a consensus exists, add it to our
         // list of consensuses to test
+        val record = r.asInstanceOf[AlignmentRecord]
         Consensus.generateAlternateConsensus(
-          r.getSequence,
+          record.getSequence,
           ReferencePosition(
-            r.getContigName,
-            r.getStart
+            record.getContigName,
+            record.getStart
           ),
-          r.samtoolsCigar
+          record.samtoolsCigar
         )
       })
       .toSeq

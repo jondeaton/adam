@@ -74,7 +74,7 @@ private[adam] class ConsensusGeneratorFromSmithWaterman(
           region.start
         )
 
-        val newRead: RichAlignmentRecord = AlignmentRecord.newBuilder(r)
+        val newRead: RichAlignmentRecord = AlignmentRecord.newBuilder(r.asInstanceOf[AlignmentRecord])
           .setStart(sw.xStart + region.start)
           .setCigar(sw.cigarX.toString)
           .setMismatchingPositions(mdTag.toString())

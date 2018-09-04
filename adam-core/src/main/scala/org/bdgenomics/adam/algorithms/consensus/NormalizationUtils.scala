@@ -85,21 +85,21 @@ private[adam] object NormalizationUtils {
 
       val readSeq: String = read.getSequence
 
-      // if an insert, get variant and preceeding bases from read
-      // if delete, pick variant, from reference, preceeding bases from read
+      // if an insert, get variant and preceding bases from read
+      // if delete, pick variant, from reference, preceding bases from read
       val variant = if (isInsert) {
         readSeq.drop(readPos).take(indelLength)
       } else {
-        val refSeq = richRead.mdTag.get.getReference(read)
+        val refSeq = richRead.mdTag.get.getReference(read.asInstanceOf[RichAlignmentRecord])
         refSeq.drop(referencePos).take(indelLength)
       }
 
-      // preceeding sequence must always come from read
-      // if preceeding sequence does not come from read, we may left shift through a SNP
-      val preceeding = readSeq.take(readPos)
+      // preceding sequence must always come from read
+      // if preceding sequence does not come from read, we may left shift through a SNP
+      val preceding = readSeq.take(readPos)
 
       // identify the number of bases to shift by
-      val shiftLength = numberOfPositionsToShiftIndel(variant, preceeding)
+      val shiftLength = numberOfPositionsToShiftIndel(variant, preceding)
 
       shiftIndel(RichCigar(cigar), indelPos, shiftLength)
     } else {
@@ -112,26 +112,26 @@ private[adam] object NormalizationUtils {
    * Requires that the indel has been trimmed. For an insertion, this should be called on read data
    *
    * @param variant Bases of indel variant sequence.
-   * @param preceeding Bases of sequence to left of variant.
+   * @param preceding Bases of sequence to left of variant.
    * @return The number of bases to shift an indel for it to be left normalized.
    */
-  private[consensus] def numberOfPositionsToShiftIndel(variant: String, preceeding: String): Int = {
+  private[consensus] def numberOfPositionsToShiftIndel(variant: String, preceding: String): Int = {
 
     // tail recursive function to determine shift
-    @tailrec def numberOfPositionsToShiftIndelAccumulate(variant: String, preceeding: String, accumulator: Int): Int = {
-      if (preceeding.length == 0 || preceeding.last != variant.last) {
+    @tailrec def numberOfPositionsToShiftIndelAccumulate(variant: String, preceding: String, accumulator: Int): Int = {
+      if (preceding.length == 0 || preceding.last != variant.last) {
         // the indel cannot be moved further left if we do not have bases in front of our indel, or if we cannot barrel rotate the indel
         accumulator
       } else {
         // barrel rotate variant
         val newVariant = variant.last + variant.dropRight(1)
-        // trim preceeding sequence
-        val newPreceeding = preceeding.dropRight(1)
-        numberOfPositionsToShiftIndelAccumulate(newVariant, newPreceeding, accumulator + 1)
+        // trim preceding sequence
+        val newPreceding = preceding.dropRight(1)
+        numberOfPositionsToShiftIndelAccumulate(newVariant, newPreceding, accumulator + 1)
       }
     }
 
-    numberOfPositionsToShiftIndelAccumulate(variant, preceeding, 0)
+    numberOfPositionsToShiftIndelAccumulate(variant, preceding, 0)
   }
 
   /**

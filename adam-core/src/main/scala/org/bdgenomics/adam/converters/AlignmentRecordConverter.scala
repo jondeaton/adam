@@ -304,7 +304,7 @@ class AlignmentRecordConverter extends Serializable {
           Option(adamRecord.getReadNegativeStrand)
             .foreach(v => builder.setReadNegativeStrandFlag(v.booleanValue))
           Option(adamRecord.getPrimaryAlignment)
-            .foreach(v => builder.setNotPrimaryAlignmentFlag(!v.booleanValue))
+            .foreach(v => builder.setSecondaryAlignment(!v.booleanValue))
           Option(adamRecord.getSupplementaryAlignment)
             .foreach(v => builder.setSupplementaryAlignmentFlag(v.booleanValue))
           Option(adamRecord.getStart)
