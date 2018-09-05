@@ -23,7 +23,6 @@ import htsjdk.samtools.util.{ BinaryCodec, BlockCompressedOutputStream }
 import java.io.{ OutputStream, StringWriter, Writer }
 import java.net.URI
 import java.nio.file.Paths
-
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.io.LongWritable
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
@@ -32,15 +31,23 @@ import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.MetricsContext._
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{ Dataset, Row, SQLContext, SparkSession }
+import org.apache.spark.sql.{ Dataset, Row, SQLContext }
 import org.apache.spark.storage.StorageLevel
-import org.bdgenomics.adam.algorithms.consensus.{ ConsensusGenerator, ConsensusGeneratorFromReads, NormalizationUtils }
+import org.bdgenomics.adam.algorithms.consensus.{
+  ConsensusGenerator,
+  ConsensusGeneratorFromReads,
+  NormalizationUtils
+}
 import org.bdgenomics.adam.converters.AlignmentRecordConverter
 import org.bdgenomics.adam.instrumentation.Timers._
 import org.bdgenomics.adam.models._
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.rdd._
-import org.bdgenomics.adam.rdd.feature.{ CoverageRDD, DatasetBoundCoverageRDD, RDDBoundCoverageRDD }
+import org.bdgenomics.adam.rdd.feature.{
+  CoverageRDD,
+  DatasetBoundCoverageRDD,
+  RDDBoundCoverageRDD
+}
 import org.bdgenomics.adam.rdd.read.realignment.RealignIndels
 import org.bdgenomics.adam.rdd.read.recalibration.BaseQualityRecalibration
 import org.bdgenomics.adam.rdd.fragment.FragmentRDD
@@ -49,9 +56,11 @@ import org.bdgenomics.adam.sql.{ AlignmentRecord => AlignmentRecordProduct }
 import org.bdgenomics.adam.serialization.AvroSerializer
 import org.bdgenomics.adam.util.{ FileMerger, ReferenceFile }
 import org.bdgenomics.formats.avro._
-import org.bdgenomics.utils.interval.array.{ IntervalArray, IntervalArraySerializer }
+import org.bdgenomics.utils.interval.array.{
+  IntervalArray,
+  IntervalArraySerializer
+}
 import org.seqdoop.hadoop_bam._
-
 import scala.collection.JavaConversions._
 import scala.language.implicitConversions
 import scala.math.{ abs, min }
@@ -203,7 +212,7 @@ case class ParquetUnboundAlignmentRecordRDD private[rdd] (
   }
 
   lazy val dataset = {
-    val sqlContext = SparkSession.builder().getOrCreate()
+    val sqlContext = SQLContext.getOrCreate(sc)
     import sqlContext.implicits._
     sqlContext.read.parquet(parquetFilename).as[AlignmentRecordProduct]
   }
@@ -320,7 +329,7 @@ case class RDDBoundAlignmentRecordRDD private[rdd] (
    * A SQL Dataset of reads.
    */
   lazy val dataset: Dataset[AlignmentRecordProduct] = {
-    val sqlContext = SparkSession.builder().getOrCreate()
+    val sqlContext = SQLContext.getOrCreate(rdd.context)
     import sqlContext.implicits._
     sqlContext.createDataset(rdd.map(AlignmentRecordProduct.fromAvro))
   }
@@ -770,7 +779,7 @@ sealed abstract class AlignmentRecordRDD extends AvroRecordGroupGenomicDataset[A
       val binaryCodec = new BinaryCodec(compressedOut)
 
       // write a bam header - cribbed from Hadoop-BAM
-      binaryCodec.writeBytes("BAM\001".getBytes())
+      binaryCodec.writeBytes("BAM\u0001".getBytes())
       val sw: Writer = new StringWriter()
       new SAMTextHeaderCodec().encode(sw, header)
       binaryCodec.writeString(sw.toString, true, false)
