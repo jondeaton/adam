@@ -23,6 +23,7 @@ import org.bdgenomics.adam.models._
 import org.bdgenomics.adam.rdd.ADAMContext._
 import org.bdgenomics.adam.rdd.read.realignment.IndelRealignmentTarget
 import org.bdgenomics.adam.rich.RichAlignmentRecord
+import org.bdgenomics.adam.sql.AlignmentRecord
 import org.bdgenomics.formats.avro.Variant
 import scala.math.max
 import scala.transient
@@ -86,7 +87,7 @@ private[adam] class ConsensusGeneratorFromKnowns(rdd: RDD[Variant],
 
       // get region
       val start = reads.map(_.record.getStart).min
-      val end = reads.map(_.getEnd).max
+      val end = reads.map(_.record.getEnd).max
       val refId = reads.head.record.getContigName
 
       val region = ReferenceRegion(refId, start, end + 1)
